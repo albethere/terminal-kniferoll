@@ -43,11 +43,22 @@ if command -v pyenv &>/dev/null; then
 fi
 
 # --- ZSCALER PROXY CONFIG (CORP DEVICES ONLY) ---
-if [[ -f "/usr/share/ca-certificates/zscaler.pem" ]]; then
-    export REQUESTS_CA_BUNDLE=/usr/share/ca-certificates/zscaler.pem
-    export CURL_CA_BUNDLE=/usr/share/ca-certificates/zscaler.pem
-    export NODE_EXTRA_CA_CERTS=/usr/share/ca-certificates/zscaler.pem
-    export SSL_CERT_FILE=/usr/share/ca-certificates/zscaler.pem
+# Standard paths for Linux/WSL and macOS
+ZSC_PEM_LINUX="/usr/share/ca-certificates/zscaler.pem"
+ZSC_PEM_MAC="/usr/local/share/ca-certificates/zscaler.pem"
+
+if [[ -f "$ZSC_PEM_LINUX" ]]; then
+    export ZSC_PEM="$ZSC_PEM_LINUX"
+elif [[ -f "$ZSC_PEM_MAC" ]]; then
+    export ZSC_PEM="$ZSC_PEM_MAC"
+fi
+
+if [[ -n "$ZSC_PEM" ]]; then
+    export REQUESTS_CA_BUNDLE="$ZSC_PEM"
+    export CURL_CA_BUNDLE="$ZSC_PEM"
+    export NODE_EXTRA_CA_CERTS="$ZSC_PEM"
+    export SSL_CERT_FILE="$ZSC_PEM"
+    export GIT_SSL_CAINFO="$ZSC_PEM"
 fi
 
 # --- WTFIS API KEYS ---
