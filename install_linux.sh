@@ -50,6 +50,15 @@ fi
 info "Refreshing apt package list..."
 $SUDO apt-get update -qq
 
+# ── 1.5. 1Password CLI (op) ─────────────────────────────────────────────────
+if ! command -v op &>/dev/null; then
+  info "Adding 1Password repository..."
+  curl -sS https://downloads.1password.com/linux/debian/gpg | $SUDO gpg --dearmor --yes -o /usr/share/keyrings/1password-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | $SUDO tee /etc/apt/sources.list.d/1password.list
+  mkdir -p $HOME/.1password && $SUDO chown -R "$USER":"$USER" $HOME/.1password
+  $SUDO apt-get update -qq
+fi
+
 if [ "$INSTALL_SHELL" = true ]; then
     info "Installing shell environment (Zsh + Oh My Zsh)..."
     if ! command -v zsh &> /dev/null; then
@@ -65,10 +74,10 @@ fi
 info "Installing shared tooling payload..."
 
 APT_PACKAGES=(
-    binutils btop ca-certificates curl exiftool fastfetch fontconfig freetype2-demos
+    1password-cli binutils btop ca-certificates curl exiftool fastfetch fontconfig freetype2-demos
     fzf git gnutls-bin golang gzip hexyl jq libssl-dev lua5.4 lz4 m4 micro
     ncurses-bin ngrep nmap nodejs openssl pipx python3 python3-pip python3-venv
-    ripgrep ruby rustup speedtest-cli sqlite3 tcpdump tealdeer tmux unbound uv
+    rclone ripgrep ruby rustup speedtest-cli sqlite3 tcpdump tealdeer tmux unbound uv
     wireshark yara zsh-autosuggestions cmatrix cbonsai
 )
 

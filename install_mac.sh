@@ -53,10 +53,10 @@ fi
 info "Installing shared tooling payload (Homebrew)..."
 
 BREW_PACKAGES=(
-    atuin bat binutils btop ca-certificates cbonsai certifi cmatrix exiftool
+    1password-cli atuin bat binutils btop ca-certificates cbonsai certifi cmatrix exiftool
     fastfetch fontconfig freetype fzf gh git gnutls go gzip
     harfbuzz hashcat hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses ngrep
-    nmap node openjdk openssl@3 pipx python@3.11 ripgrep ruby rustup
+    nmap node openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby rustup
     sd speedtest-cli sqlite tcpdump tealdeer tmux unbound uv wireshark wtfis
     zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
 )
