@@ -1,0 +1,29 @@
+{
+    "scenes": [
+        {
+            "command": "weathr",
+            "duration": 30,
+            "is_daemon": true
+        },
+        {
+            "command": "fastfetch | lolcat",
+            "duration": 10,
+            "is_daemon": false
+        },
+        {
+            "command": "btop",
+            "duration": 30,
+            "is_daemon": true
+        },
+        {
+            "command": "cbonsai --live --life 40",
+            "duration": 20,
+            "is_daemon": false
+        },
+        {
+            "command": "cmatrix -s",
+            "duration": 30,
+            "is_daemon": true
+        }
+    ]
+}
