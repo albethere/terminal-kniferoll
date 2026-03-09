@@ -28,3 +28,4 @@ The `install.sh` script is the universal entrypoint. Use flags to scope executio
 ## 🔗 Integration
 - This repo is a core dependency of `lcars-core`.
 - It is triggered by `lcars-init.sh` for bootstrapping new nodes in the Starfleet hybrid cloud.
+- **Future Protocol**: Refer to `TUNING_DIRECTIVE.md` for upcoming UX/Performance optimizations including parallel deployment and adaptive scene intelligence.

@@ -32,8 +32,20 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # --- OS Gate ---
-if ! command -v apt-get &> /dev/null; then
-    die "This script is designed for Ubuntu/Debian-based systems only."
+if command -v apt-get &> /dev/null; then
+    PKG_MGR="apt"
+    info "Detected Debian/Ubuntu-based system."
+elif command -v pacman &> /dev/null; then
+    PKG_MGR="pacman"
+    info "Detected Arch/CachyOS-based system."
+    # Check for AUR helpers
+    if command -v yay &> /dev/null; then
+        AUR_HELPER="yay"
+    elif command -v paru &> /dev/null; then
+        AUR_HELPER="paru"
+    fi
+else
+    die "Unsupported Linux distribution. No apt or pacman found."
 fi
 
 # --- sudo check ---
@@ -47,22 +59,33 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # ── 1. CORE ECOSYSTEM ────────────────────────────────────────────────────────
-info "Refreshing apt package list..."
-$SUDO apt-get update -qq
+if [[ "$PKG_MGR" == "apt" ]]; then
+    info "Refreshing apt package list..."
+    $SUDO apt-get update -qq
+elif [[ "$PKG_MGR" == "pacman" ]]; then
+    info "Refreshing pacman package list..."
+    $SUDO pacman -Sy --noconfirm
+fi
 
 # ── 1.5. 1Password CLI (op) ─────────────────────────────────────────────────
 if ! command -v op &>/dev/null; then
-  info "Adding 1Password repository..."
-  curl -sS https://downloads.1password.com/linux/debian/gpg | $SUDO gpg --dearmor --yes -o /usr/share/keyrings/1password-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | $SUDO tee /etc/apt/sources.list.d/1password.list
+  if [[ "$PKG_MGR" == "apt" ]]; then
+      info "Adding 1Password repository (APT)..."
+      curl -sS https://downloads.1password.com/linux/debian/gpg | $SUDO gpg --dearmor --yes -o /usr/share/keyrings/1password-archive-keyring.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | $SUDO tee /etc/apt/sources.list.d/1password.list
+      $SUDO apt-get update -qq
+      $SUDO apt-get install -y 1password-cli
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+      info "Installing 1Password CLI (Pacman)..."
+      $SUDO pacman -S --noconfirm 1password-cli
+  fi
   mkdir -p $HOME/.1password && $SUDO chown -R "$USER":"$USER" $HOME/.1password
-  $SUDO apt-get update -qq
 fi
 
 if [ "$INSTALL_SHELL" = true ]; then
     info "Installing shell environment (Zsh + Oh My Zsh)..."
     if ! command -v zsh &> /dev/null; then
-        $SUDO apt-get install -y zsh
+        if [[ "$PKG_MGR" == "apt" ]]; then $SUDO apt-get install -y zsh; else $SUDO pacman -S --noconfirm zsh; fi
         chsh -s "$(which zsh)"
     fi
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
@@ -70,25 +93,47 @@ if [ "$INSTALL_SHELL" = true ]; then
     fi
 fi
 
-# ── 2. SHARED TOOLING PAYLOAD ────────────────────────────────────────────────
-info "Installing shared tooling payload..."
+# ── 2. SHARED TOOLING PAYLOAD (2026 STANDARDS) ──────────────────────────────
+info "Installing 2026-standard tooling payload..."
 
-APT_PACKAGES=(
-    1password-cli binutils btop ca-certificates curl exiftool fastfetch fontconfig freetype2-demos
-    fzf git gnutls-bin golang gzip hexyl jq libssl-dev lua5.4 lz4 m4 micro
-    ncurses-bin ngrep nmap nodejs openssl pipx python3 python3-pip python3-venv
-    rclone ripgrep ruby rustup speedtest-cli sqlite3 tcpdump tealdeer tmux unbound uv
-    wireshark yara zsh-autosuggestions cmatrix cbonsai
-)
-
-for pkg in "${APT_PACKAGES[@]}"; do
-    if dpkg -s "$pkg" &> /dev/null 2>&1; then
-        ok "$pkg verified"
-    else
-        info "Installing $pkg..."
-        $SUDO apt-get install -y -qq "$pkg" || warn "Could not install $pkg"
+if [[ "$PKG_MGR" == "apt" ]]; then
+    APT_PACKAGES=(
+        1password-cli binutils btop ca-certificates curl exiftool fastfetch fontconfig
+        fzf git gnutls-bin golang gzip hexyl jq libssl-dev lua5.4 lz4 m4 micro
+        ncurses-bin ngrep nmap nodejs openssl pipx python3 python3-pip python3-venv
+        rclone ripgrep ruby rustup speedtest-cli sqlite3 tcpdump tealdeer tmux unbound uv
+        wireshark yara zsh-autosuggestions cmatrix cbonsai
+        nushell yazi mise trippy atuin zoxide starship lolcat
+    )
+    for pkg in "${APT_PACKAGES[@]}"; do
+        if dpkg -s "$pkg" &> /dev/null 2>&1; then ok "$pkg verified"; else
+            info "Installing $pkg..."
+            $SUDO apt-get install -y -qq "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+elif [[ "$PKG_MGR" == "pacman" ]]; then
+    PACMAN_PACKAGES=(
+        1password-cli binutils btop ca-certificates curl exiftool fastfetch fontconfig
+        fzf git gnutls go gzip hexyl jq openssl lua lz4 m4 micro
+        ncurses ngrep nmap nodejs python-pipx python python-pip
+        rclone ripgrep ruby rustup speedtest-cli sqlite tcpdump tealdeer tmux unbound uv
+        wireshark-cli yara zsh-autosuggestions cmatrix
+        nushell yazi mise trippy atuin zoxide starship lolcat
+    )
+    for pkg in "${PACMAN_PACKAGES[@]}"; do
+        if pacman -Qi "$pkg" &> /dev/null; then ok "$pkg verified"; else
+            info "Installing $pkg..."
+            $SUDO pacman -S --noconfirm "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+    # cbonsai is often AUR
+    if ! command -v cbonsai &>/dev/null; then
+        if [[ -n "$AUR_HELPER" ]]; then
+            info "Installing cbonsai via $AUR_HELPER..."
+            $AUR_HELPER -S --noconfirm cbonsai
+        fi
     fi
-done
+fi
 
 # ── 3. PROJECTOR SPECIFIC DEPS ───────────────────────────────────────────────
 if [ "$INSTALL_PROJECTOR" = true ]; then
@@ -132,6 +177,7 @@ if ! command -v zoxide &> /dev/null; then
 fi
 if ! command -v wtfis &> /dev/null; then
     pipx install wtfis
+    pipx ensurepath
 fi
 if ! command -v lolcat &> /dev/null; then
     $SUDO gem install lolcat || pip3 install --quiet lolcat
