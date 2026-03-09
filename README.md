@@ -1,10 +1,20 @@
-# 🔪 terminal-kniferoll
+# 🔪 terminal-kniferoll: The AIDSOCL Foundation
 
-Multipurpose terminal environment configurator: security-focused Zsh + animated terminal projector.
+> **Directive**: Standardized Environment Configuration & Sentient Projector Hub
+>
+> This repository provides the foundational environment for the **AI DevSecOps Cloud Lab (AIDSOCL)**. It combines a security-hardened Zsh environment with an animated, sentient terminal experience.
 
-`terminal-kniferoll` is the successor to `zsh-kniferoll` and `terminal-projector`, providing a unified, idempotent bootstrap for modern terminal workflows.
+## 🚀 AIDSOCL Integration
+`terminal-kniferoll` is the primary bootstrap for the `lcars-core` AIDSOCL ecosystem. It provides the **sentience** and **tooling** required for autonomous agents to operate seamlessly across the hybrid cloud.
 
-## 🚀 Quick Start
+### The `aidsocl` Command
+This repo injects the `aidsocl` command into your shell, enabling immediate:
+*   **Environmental Awareness**: Detect OS, PVE host status, and Subspace connectivity.
+*   **Heartbeat Verification**: Confirm the node is pulsing correctly with the cloud hive.
+*   **AI Handshake**: Prepare the environment for the Ship's Computer or specialized agents.
+
+## 🛠 Features
+...
 
 ```bash
 # Full installation (Shell + Projector)
