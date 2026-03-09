@@ -21,3 +21,8 @@ if command -v sd &>/dev/null; then alias sed='sd'; fi
 alias snzrc='sudo nano ~/.zshrc'
 alias szrc='source ~/.zshrc'
 alias ff='fastfetch --pipe | lolcat'
+
+# AIDSOCL (AI DevSecOps Cloud Lab)
+alias aidsocl='bash $HOME/Projects/lcars-core/scripts/lcars_awareness.sh && lcars_report_awareness'
+alias ship='bash $HOME/Projects/lcars-core/scripts/lcars.sh'
+alias computer='bash $HOME/Projects/lcars-core/scripts/lcars-console.sh'
