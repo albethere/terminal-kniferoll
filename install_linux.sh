@@ -21,15 +21,32 @@ die()  { echo -e "${RED}[✘] FATAL: ${1}${RESET}" >&2; exit 1; }
 # --- Flags ---
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
+MODE="passive"
 
 while [[ "$#" -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --shell) INSTALL_PROJECTOR=false ;;
         --projector) INSTALL_SHELL=false ;;
+        --interactive) MODE="interactive" ;;
+        --passive) MODE="passive" ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
 done
+
+ask_proceed() {
+    if [[ "$MODE" == "interactive" ]]; then
+        echo -en "\033[0;36m[?] ${1} [Y/n] \033[0m"
+        read -r prompt_reply
+        if [[ -z "$prompt_reply" || "$prompt_reply" =~ ^[Yy]$ ]]; then
+            return 0
+        else
+            echo -e "\033[1;33m[-] Skipping...\033[0m"
+            return 1
+        fi
+    fi
+    return 0
+}
 
 # --- OS Gate ---
 if command -v apt-get &> /dev/null; then
@@ -59,6 +76,7 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # ── 1. CORE ECOSYSTEM ────────────────────────────────────────────────────────
+if ask_proceed "Update package repositories?"; then
 if [[ "$PKG_MGR" == "apt" ]]; then
     info "Refreshing apt package list..."
     $SUDO apt-get update -qq
@@ -67,7 +85,10 @@ elif [[ "$PKG_MGR" == "pacman" ]]; then
     $SUDO pacman -Sy --noconfirm
 fi
 
+fi
+
 # ── 1.5. 1Password CLI (op) ─────────────────────────────────────────────────
+if ask_proceed "Install 1Password CLI?"; then
 if ! command -v op &>/dev/null; then
   if [[ "$PKG_MGR" == "apt" ]]; then
       info "Adding 1Password repository (APT)..."
@@ -82,7 +103,10 @@ if ! command -v op &>/dev/null; then
   mkdir -p $HOME/.1password && $SUDO chown -R "$USER":"$USER" $HOME/.1password
 fi
 
+fi
+
 if [ "$INSTALL_SHELL" = true ]; then
+    if ask_proceed "Install Base Shell environment (Zsh + Oh My Zsh)?"; then
     info "Installing shell environment (Zsh + Oh My Zsh)..."
     if ! command -v zsh &> /dev/null; then
         if [[ "$PKG_MGR" == "apt" ]]; then $SUDO apt-get install -y zsh; else $SUDO pacman -S --noconfirm zsh; fi
@@ -91,9 +115,11 @@ if [ "$INSTALL_SHELL" = true ]; then
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
         sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
     fi
+    fi
 fi
 
 # ── 2. SHARED TOOLING PAYLOAD (2026 STANDARDS) ──────────────────────────────
+if ask_proceed "Install Shared Tooling Payload (2026 Standards)?"; then
 info "Installing 2026-standard tooling payload..."
 
 if [[ "$PKG_MGR" == "apt" ]]; then
@@ -135,8 +161,11 @@ elif [[ "$PKG_MGR" == "pacman" ]]; then
     fi
 fi
 
+fi
+
 # ── 3. PROJECTOR SPECIFIC DEPS ───────────────────────────────────────────────
 if [ "$INSTALL_PROJECTOR" = true ]; then
+    if ask_proceed "Install Projector specific dependencies (Rust/Cargo, weathr)?"; then
     info "Verifying Projector dependencies (Rust/Cargo, weathr)..."
     if ! command -v cargo &>/dev/null; then
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
@@ -145,9 +174,11 @@ if [ "$INSTALL_PROJECTOR" = true ]; then
     if ! command -v weathr &>/dev/null; then
         cargo install weathr
     fi
+    fi
 fi
 
 # ── 4. MODERN RUST/PYTHON CLI TOOLS ──────────────────────────────────────────
+if ask_proceed "Install Modern CLI Tools (lsd, bat, sd, atuin, etc.)?"; then
 install_github_deb() {
     local repo="$1"
     local pattern="$2"
@@ -183,8 +214,11 @@ if ! command -v lolcat &> /dev/null; then
     $SUDO gem install lolcat || pip3 install --quiet lolcat
 fi
 
+fi
+
 # ── 5. ZSH PLUGINS ───────────────────────────────────────────────────────────
 if [ "$INSTALL_SHELL" = true ]; then
+    if ask_proceed "Install ZSH Plugins (autosuggestions, syntax-highlighting)?"; then
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     mkdir -p "$ZSH_CUSTOM/plugins"
     if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]; then
@@ -193,9 +227,11 @@ if [ "$INSTALL_SHELL" = true ]; then
     if [ ! -d "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting" ]; then
         git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting"
     fi
+    fi
 fi
 
 # ── 6. JETBRAINSMONO NERD FONT ───────────────────────────────────────────────
+if ask_proceed "Install JetBrainsMono Nerd Font?"; then
 FONT_DIR="$HOME/.local/share/fonts"
 if ! fc-list | grep -qi "JetBrainsMono" &>/dev/null; then
     info "Installing JetBrainsMono Nerd Font..."
@@ -207,24 +243,30 @@ if ! fc-list | grep -qi "JetBrainsMono" &>/dev/null; then
     rm -f "$TMP_ZIP"
 fi
 
+fi
+
 # ── 7. CONFIG DEPLOYMENT ─────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [ "$INSTALL_SHELL" = true ]; then
+    if ask_proceed "Deploy Shell configurations (.zshrc, aliases, plugins)?"; then
     info "Deploying shell configurations..."
     mkdir -p "$HOME/.shell"
     cp "$SCRIPT_DIR/shell/zshrc.zsh" "$HOME/.zshrc"
     cp "$SCRIPT_DIR/shell/aliases.zsh" "$HOME/.shell/aliases.zsh"
     cp "$SCRIPT_DIR/shell/plugins.zsh" "$HOME/.shell/plugins.zsh"
+    fi
 fi
 
 if [ "$INSTALL_PROJECTOR" = true ]; then
+    if ask_proceed "Deploy Projector configuration?"; then
     info "Deploying Projector configuration..."
     mkdir -p "$HOME/.config/projector"
     if [ ! -f "$HOME/.config/projector/config.json" ]; then
         cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
     fi
     chmod +x "$SCRIPT_DIR/projector.py"
+    fi
 fi
 
 ok "Installation Complete!"
