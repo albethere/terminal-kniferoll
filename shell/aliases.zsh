@@ -22,7 +22,9 @@ alias snzrc='sudo nano ~/.zshrc'
 alias szrc='source ~/.zshrc'
 alias ff='fastfetch --pipe | lolcat'
 
-# AIDSOCL (AI DevSecOps Cloud Lab)
-alias aidsocl='bash $HOME/Projects/lcars-core/scripts/lcars_awareness.sh && lcars_report_awareness'
-alias ship='bash $HOME/Projects/lcars-core/scripts/lcars.sh'
-alias computer='bash $HOME/Projects/lcars-core/scripts/lcars-console.sh'
+# Optional orchestration stack (only if LCARS_CORE_DIR is set)
+if [[ -n "${LCARS_CORE_DIR:-}" ]]; then
+    alias aidsocl='bash "$LCARS_CORE_DIR/scripts/lcars_awareness.sh" && lcars_report_awareness'
+    alias ship='bash "$LCARS_CORE_DIR/scripts/lcars.sh"'
+    alias computer='bash "$LCARS_CORE_DIR/scripts/lcars-console.sh"'
+fi

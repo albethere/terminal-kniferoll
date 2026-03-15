@@ -48,7 +48,10 @@ ask_proceed() {
     return 0
 }
 
-# --- OS Gate ---
+# --- SecDevOps phases: Detect → Validate → Install → Configure (Verify optional) ---
+# Detect: OS, pkg manager, sudo (below). Validate: deps. Install: packages + tools. Configure: shell + projector deploy.
+
+# --- OS Gate (Detect) ---
 if command -v apt-get &> /dev/null; then
     PKG_MGR="apt"
     info "Detected Debian/Ubuntu-based system."

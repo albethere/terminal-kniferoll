@@ -1,62 +1,74 @@
-# 🔪 terminal-kniferoll: The AIDSOCL Foundation
+# 🔪 terminal-kniferoll
 
-> **Directive**: Standardized Environment Configuration & Sentient Projector Hub
->
-> This repository provides the foundational environment for the **AI DevSecOps Cloud Lab (AIDSOCL)**. It combines a security-hardened Zsh environment with an animated, sentient terminal experience.
+Multipurpose terminal environment configurator: **security-focused Zsh** and **animated terminal projector** in one repo. One entrypoint, idempotent installs, optional automation integration.
 
-## 🚀 AIDSOCL Integration
-`terminal-kniferoll` is the primary bootstrap for the `lcars-core` AIDSOCL ecosystem. It provides the **sentience** and **tooling** required for autonomous agents to operate seamlessly across the hybrid cloud.
-
-### The `aidsocl` Command
-This repo injects the `aidsocl` command into your shell, enabling immediate:
-*   **Environmental Awareness**: Detect OS, PVE host status, and Subspace connectivity.
-*   **Heartbeat Verification**: Confirm the node is pulsing correctly with the cloud hive.
-*   **AI Handshake**: Prepare the environment for the Ship's Computer or specialized agents.
-
-## 🛠 Features
-...
+## Quick start
 
 ```bash
-# Full installation (Shell + Projector)
+git clone https://github.com/YOUR_ORG/terminal-kniferoll.git
+cd terminal-kniferoll
 ./install.sh
-
-# Shell-only (Zsh, plugins, aliases)
-./install.sh --shell
-
-# Projector-only (btop, fastfetch, cbonsai, animation suite)
-./install.sh --projector
 ```
 
-## 🛠 Features
+- **Shell only:** `./install.sh --shell`
+- **Projector only:** `./install.sh --projector`
+- **Both (default):** `./install.sh`
 
-- **Security-First Zsh**: Standardized `.zshrc` with Oh My Zsh, modern plugins (fzf, zoxide, atuin), and Zscaler proxy detection.
-- **Modern CLI Payload**: Automatically installs `lsd`, `bat`, `sd`, `ripgrep`, `btop`, `fastfetch`, and more.
-- **Terminal Projector**: A Python-based orchestrator (`projector.py`) that cycles through animated terminal scenes (bonsai, matrix, weather, etc.).
-- **Cross-Platform**: Native support for Ubuntu/Debian, macOS (Apple Silicon + Intel), and Windows WSL.
+| Platform   | Command |
+|-----------|---------|
+| macOS     | `./install.sh` or `./install_mac.sh` |
+| Linux     | `./install.sh` or `./install_linux.sh` |
+| Windows   | `powershell -ExecutionPolicy Bypass -File install_windows.ps1` (projector; full stack via WSL + Linux installer) |
 
-## 📁 Repository Structure
+## How it works (step-by-step)
+
+1. **Entrypoint** — You run `./install.sh` (optionally with `--shell` or `--projector`). Script detects OS via `uname -s` (and WSL if present).
+2. **Optional awareness** — If an “awareness” script is found (e.g. via `LCARS_CORE_DIR` or a sibling `lcars-core` repo), it is sourced and reports OS/arch; otherwise the installer runs in standalone mode.
+3. **Mode** — If the run is interactive (TTY), you may be asked: **[1] Interactive** (conversational tool choice) or **[2] Passive** (auto sync + config). Non-interactive runs default to Passive.
+4. **Delegation** — `install.sh` invokes the platform script: `install_linux.sh` or `install_mac.sh` (or Windows instructions).
+5. **Shell path** — Platform installer ensures Zsh, Oh My Zsh, and plugins (autosuggestions, fast-syntax-highlighting), then deploys `shell/zshrc.zsh`, `aliases.zsh`, and `plugins.zsh` into your profile (e.g. concatenated into `~/.zshrc` or copied to `~/.shell/` and sourced).
+6. **Projector path** — Installs Rust/Python, weathr, btop, fastfetch, cbonsai, cmatrix, etc.; makes `projector.py` executable; creates `~/.config/projector/config.json` from default on first run.
+7. **Config** — Shell: Zscaler PEM paths (Linux vs macOS) and `PRIVATE_*` API keys. Projector: scene list and durations in the config file.
+8. **Idempotency** — Already-installed packages are skipped; config is deployed on each run unless guarded.
+9. **Optional integration** — Automation can set `TERMINAL_KNIFEROLL_DIR`, clone this repo, and run `install.sh --shell` (or full). Set `LCARS_CORE_DIR` if you use that stack and want shell aliases/awareness.
+
+For a full walkthrough and implementation notes, see `docs/SESSION_LOG.md` (§2).
+
+## Features
+
+- **Security-first Zsh** — Oh My Zsh, fzf, zoxide, atuin, Zscaler proxy detection, `PRIVATE_*` env vars for API keys.
+- **Modern CLI** — lsd, bat, ripgrep, btop, fastfetch, and more.
+- **Terminal projector** — `projector.py` cycles through scenes (weather, system stats, bonsai, matrix, etc.).
+- **Cross-platform** — Ubuntu/Debian, macOS (Apple Silicon + Intel), Windows (projector via PowerShell; full stack via WSL).
+
+## Repository layout
 
 ```
 terminal-kniferoll/
-├── install.sh              # Universal entrypoint (OS detect → delegates)
-├── install_mac.sh          # macOS full installer
-├── install_linux.sh        # Linux full installer
-├── install_windows.ps1     # Windows PowerShell installer
-├── projector.py            # Terminal animation orchestrator
+├── install.sh           # Universal entrypoint
+├── install_mac.sh       # macOS installer
+├── install_linux.sh     # Linux installer
+├── install_windows.ps1  # Windows (projector)
+├── projector.py        # Scene orchestrator
 ├── shell/
-│   ├── zshrc.zsh           # Standardized .zshrc template
-│   ├── aliases.zsh         # Alias definitions
-│   └── plugins.zsh         # Plugin declarations
+│   ├── zshrc.zsh       # Core Zsh config
+│   ├── aliases.zsh     # Aliases
+│   └── plugins.zsh     # Plugins & evals
 ├── projector/
-│   └── config.json.default # Default scene rotation config
-├── GEMINI.md               # AI Agent directives
-└── README.md               # You are here
+│   └── config.json.default
+├── docs/
+│   └── SESSION_LOG.md  # Log, plan, walkthrough, agent prompts
+├── GEMINI.md           # Agent directives
+└── README.md
 ```
 
-## 🔗 LCARS Core Integration
+## Optional automation integration
 
-This repository is designed to be the primary bootstrap for the `lcars-core` ecosystem. It is automatically called by `lcars-init.sh` to ensure every node in the fleet has a consistent, powerful, and secure terminal environment.
+This repo can be invoked from an automation or bootstrap stack:
 
-## ⚖️ License
+- **Contract:** Caller sets `TERMINAL_KNIFEROLL_DIR` (default: clone path, e.g. `$HOME/Projects/terminal-kniferoll`). Run `install.sh --shell` for shell-only, or `install.sh` for full install. Idempotent.
+- **Optional:** If you use a companion “orchestration” stack that provides an awareness script and console, set `LCARS_CORE_DIR` to its path before sourcing your shell so the injected aliases (e.g. `computer`) work.
+
+## License
 
 MIT

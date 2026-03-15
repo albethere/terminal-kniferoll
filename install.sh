@@ -22,17 +22,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- PSYCHIC BOOTSTRAPPER ---
 echo -e "\n${C_BLUE}Initializing Psychic Bootstrapper...${C_RESET}"
 
-# 1. Environment Awareness
-AWARENESS_SCRIPT="$(cd "$SCRIPT_DIR/../lcars-core/scripts" 2>/dev/null && pwd)/lcars_awareness.sh"
-if [[ -z "$AWARENESS_SCRIPT" || ! -f "$AWARENESS_SCRIPT" ]]; then
+# 1. Optional environment awareness (set LCARS_CORE_DIR or leave unset for standalone use)
+AWARENESS_SCRIPT=""
+if [[ -n "${LCARS_CORE_DIR:-}" && -f "$LCARS_CORE_DIR/scripts/lcars_awareness.sh" ]]; then
+    AWARENESS_SCRIPT="$LCARS_CORE_DIR/scripts/lcars_awareness.sh"
+elif [[ -f "$SCRIPT_DIR/../lcars-core/scripts/lcars_awareness.sh" ]]; then
+    AWARENESS_SCRIPT="$(cd "$SCRIPT_DIR/../lcars-core/scripts" && pwd)/lcars_awareness.sh"
+elif [[ -f "$HOME/Projects/lcars-core/scripts/lcars_awareness.sh" ]]; then
     AWARENESS_SCRIPT="$HOME/Projects/lcars-core/scripts/lcars_awareness.sh"
 fi
-
-if [[ -f "$AWARENESS_SCRIPT" ]]; then
+if [[ -n "$AWARENESS_SCRIPT" ]]; then
     source "$AWARENESS_SCRIPT"
-    lcars_report_awareness
+    lcars_report_awareness 2>/dev/null || true
 else
-    echo -e "\033[1;33m[!] LCARS Awareness module not found. Proceeding with limited context.\033[0m"
+    echo -e "\033[1;33m[*] Standalone mode. Set LCARS_CORE_DIR to enable optional awareness.\033[0m"
 fi
 
 # 2. Dual-Mode Prompt
