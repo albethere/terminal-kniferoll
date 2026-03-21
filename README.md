@@ -32,7 +32,7 @@ cd terminal-kniferoll
 8. **Idempotency** — Already-installed packages are skipped; config is deployed on each run unless guarded.
 9. **Optional integration** — Automation can set `TERMINAL_KNIFEROLL_DIR`, clone this repo, and run `install.sh --shell` (or full). Set `LCARS_CORE_DIR` if you use that stack and want shell aliases/awareness.
 
-For a full walkthrough and implementation notes, see `docs/SESSION_LOG.md` (§2).
+For a full walkthrough and design notes, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Features
 
@@ -64,10 +64,12 @@ terminal-kniferoll/
 
 ## Optional automation integration
 
-This repo can be invoked from an automation or bootstrap stack:
+This repo works **standalone out of the box** and can also be invoked from an external automation or bootstrap stack:
 
-- **Contract:** Caller sets `TERMINAL_KNIFEROLL_DIR` (default: clone path, e.g. `$HOME/Projects/terminal-kniferoll`). Run `install.sh --shell` for shell-only, or `install.sh` for full install. Idempotent.
-- **Optional:** If you use a companion “orchestration” stack that provides an awareness script and console, set `LCARS_CORE_DIR` to its path before sourcing your shell so the injected aliases (e.g. `computer`) work.
+- **Contract:** Caller sets `TERMINAL_KNIFEROLL_DIR` (default: clone path, e.g. `$HOME/Projects/terminal-kniferoll`). Run `install.sh --shell` for shell-only, or `install.sh` for full install. All runs are idempotent.
+- **Optional:** If you use a companion orchestration stack that provides an awareness script, set `LCARS_CORE_DIR` to its path before sourcing your shell so the injected aliases work.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for integration details and the full architecture overview.
 
 ## License
 

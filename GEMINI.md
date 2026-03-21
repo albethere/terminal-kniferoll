@@ -31,5 +31,6 @@ The `install.sh` script is the universal entrypoint. Use flags to scope executio
 
 ## 📍 Guiding context for delegated agents
 - **Directive and role:** This file (GEMINI.md).
-- **Implementation plan, scrub list, walkthrough, architecture, lcars vs kniferoll, and delegation prompts:** `docs/SESSION_LOG.md`. Read it before implementing cross-repo or multi-step tasks.
-- **Future Protocol**: Refer to `TUNING_DIRECTIVE.md` for upcoming UX/Performance optimizations including parallel deployment and adaptive scene intelligence.
+- **Implementation plan, scrub list, walkthrough, architecture, lcars vs kniferoll, and delegation prompts:** `docs/internal/SESSION_LOG.md`. Read it before implementing cross-repo or multi-step tasks.
+- **Public architecture overview:** `docs/ARCHITECTURE.md` — the public-safe walkthrough and design reference.
+- **Future Protocol**: Refer to `docs/internal/TUNING_DIRECTIVE.md` for upcoming UX/Performance optimizations including parallel deployment and adaptive scene intelligence.

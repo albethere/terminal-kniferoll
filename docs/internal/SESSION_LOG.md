@@ -184,8 +184,8 @@ You are documenting and, if needed, implementing the contract between lcars-core
 ## 7. Guiding Context (Where Agents Look)
 
 - **Directive and role:** `GEMINI.md` (in repo root).
-- **This session’s plan, scrub list, walkthrough, architecture, lcars vs kniferoll, and delegation prompts:** `docs/SESSION_LOG.md` (this file).
-- **Upstream tuning/directives:** Optional `TUNING_DIRECTIVE.md`, `AIDSOCL_KNIFEROLL_DIRECTIVE.md` (internal only; do not expose in public repo).
+- **This session’s plan, scrub list, walkthrough, architecture, lcars vs kniferoll, and delegation prompts:** `docs/internal/SESSION_LOG.md` (this file).
+- **Upstream tuning/directives:** `docs/internal/TUNING_DIRECTIVE.md`, `docs/internal/AIDSOCL_KNIFEROLL_DIRECTIVE.md` (internal only; already in docs/internal/).
 
 ---
 

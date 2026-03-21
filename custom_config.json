@@ -16,7 +16,7 @@
             "is_daemon": true
         },
         {
-            "command": "/home/ctrl/.cargo/bin/weathr",
+            "command": "weathr",
             "duration": 5,
             "is_daemon": true
         }
