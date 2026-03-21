@@ -21,10 +21,3 @@ if command -v sd &>/dev/null; then alias sed='sd'; fi
 alias snzrc='sudo nano ~/.zshrc'
 alias szrc='source ~/.zshrc'
 alias ff='fastfetch --pipe | lolcat'
-
-# Optional orchestration stack (only if LCARS_CORE_DIR is set)
-if [[ -n "${LCARS_CORE_DIR:-}" ]]; then
-    alias aidsocl='bash "$LCARS_CORE_DIR/scripts/lcars_awareness.sh" && lcars_report_awareness'
-    alias ship='bash "$LCARS_CORE_DIR/scripts/lcars.sh"'
-    alias computer='bash "$LCARS_CORE_DIR/scripts/lcars-console.sh"'
-fi

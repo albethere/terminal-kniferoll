@@ -6,7 +6,7 @@
 ## 🚀 Core Objectives
 1. **Utility**: Deploy a production-ready, security-hardened Zsh environment on any OS (Linux, macOS, WSL).
 2. **Dashboard**: Provide a rich, animated terminal experience (Projector mode) for system monitoring and aesthetics.
-3. **Identity**: Spiritual successor to minimal dotfile setups; can be used standalone or with an optional orchestration stack.
+3. **Identity**: Standalone terminal configurator; can be used with any automation stack or none.
 
 ## 📡 Usage Modes
 The `install.sh` script is the universal entrypoint. Use flags to scope execution:
@@ -26,11 +26,4 @@ The `install.sh` script is the universal entrypoint. Use flags to scope executio
 - **Permission Safety**: Use `sudo -E` for terminal operations to preserve user environment variables.
 
 ## 🔗 Integration
-- This repo can be invoked by automation (e.g. a central bootstrap script). Use `TERMINAL_KNIFEROLL_DIR`; run `install.sh --shell` or full install.
-- Optional: when used with an orchestration stack, that stack may clone this repo and run the installer for new nodes.
-
-## 📍 Guiding context for delegated agents
-- **Directive and role:** This file (GEMINI.md).
-- **Implementation plan, scrub list, walkthrough, architecture, lcars vs kniferoll, and delegation prompts:** `docs/internal/SESSION_LOG.md`. Read it before implementing cross-repo or multi-step tasks.
-- **Public architecture overview:** `docs/ARCHITECTURE.md` — the public-safe walkthrough and design reference.
-- **Future Protocol**: Refer to `docs/internal/TUNING_DIRECTIVE.md` for upcoming UX/Performance optimizations including parallel deployment and adaptive scene intelligence.
+- Automation can invoke this repo via `TERMINAL_KNIFEROLL_DIR` and `install.sh --shell` or full install. No hardcoded org or hostnames.
