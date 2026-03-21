@@ -28,6 +28,22 @@ function Confirm-Choice {
     return $choice -match '^[Yy]$'
 }
 
+function Invoke-Optional {
+    param(
+        [string]$Description,
+        [scriptblock]$Action
+    )
+    Write-Info $Description
+    try {
+        & $Action
+        Write-OK $Description
+        return $true
+    } catch {
+        Write-Warn "$Description failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 # ── Header ────────────────────────────────────────────────────────────────────
 Clear-Host
 Write-Host @"
@@ -35,6 +51,23 @@ Write-Host @"
   ║   Terminal Projector – Windows Installer      ║
   ╚══════════════════════════════════════════════╝
 "@ -ForegroundColor Cyan
+
+$Mode = 'passive'
+if ($Host.Name -notmatch 'ServerRemoteHost' -and [Environment]::UserInteractive) {
+    $modeChoice = Read-Host "Select mode: [1] Interactive [2] Passive (default: 2)"
+    if ($modeChoice -eq '1') { $Mode = 'interactive' }
+}
+
+$DO_CORE = $true
+$DO_SECURITY = $true
+$DO_PROJECTOR = $true
+$DO_TERMINAL = $true
+if ($Mode -eq 'interactive') {
+    if (-not (Confirm-Choice "Install/update core prerequisites?" 'Y')) { $DO_CORE = $false }
+    if (-not (Confirm-Choice "Install security/developer tools (Python, package tooling)?" 'Y')) { $DO_SECURITY = $false }
+    if (-not (Confirm-Choice "Install projector stack (Rust/toolchain, weathr, visual tools)?" 'Y')) { $DO_PROJECTOR = $false }
+    if (-not (Confirm-Choice "Configure/recommend terminal integration?" 'Y')) { $DO_TERMINAL = $false }
+}
 
 # ── Windows Version Gate ───────────────────────────────────────────────────────
 $winVer = [System.Environment]::OSVersion.Version
@@ -162,52 +195,57 @@ function Install-Pkg {
 }
 
 # ── Python ─────────────────────────────────────────────────────────────────────
-Install-Pkg -Name 'Python' -WingetId 'Python.Python.3.12' -ScoopName 'python' -ChocoName 'python3' -TestCmd 'python'
+if ($DO_SECURITY) {
+    Install-Pkg -Name 'Python' -WingetId 'Python.Python.3.12' -ScoopName 'python' -ChocoName 'python3' -TestCmd 'python'
 
-# Verify version
-try {
-    $pyVer = & python --version 2>&1 | Select-String '\d+\.\d+' | ForEach-Object { $_.Matches[0].Value }
-    $pyMajor, $pyMinor = $pyVer -split '\.'
-    if ([int]$pyMajor -lt 3 -or ([int]$pyMajor -eq 3 -and [int]$pyMinor -lt 10)) {
-        Write-Warn "Python $pyVer found but 3.10+ required. Please update manually."
-    } else {
-        Write-OK "Python $pyVer is sufficient"
+    # Verify version
+    try {
+        $pyVer = & python --version 2>&1 | Select-String '\d+\.\d+' | ForEach-Object { $_.Matches[0].Value }
+        $pyMajor, $pyMinor = $pyVer -split '\.'
+        if ([int]$pyMajor -lt 3 -or ([int]$pyMajor -eq 3 -and [int]$pyMinor -lt 10)) {
+            Write-Warn "Python $pyVer found but 3.10+ required. Please update manually."
+        } else {
+            Write-OK "Python $pyVer is sufficient"
+        }
+    } catch {
+        Write-Warn "Could not verify Python version."
     }
-} catch {
-    Write-Warn "Could not verify Python version."
 }
 
 # ── Rust / Cargo ───────────────────────────────────────────────────────────────
-if (Test-Command 'cargo') {
-    Write-OK "Rust $(rustc --version 2>$null | Select-String '\d+\.\d+' | ForEach-Object { $_.Matches[0].Value }) already installed"
-} else {
-    Write-Info "Installing Rust via rustup..."
-    $rustupUrl = 'https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe'
-    $rustupExe = "$env:TEMP\rustup-init.exe"
-    Invoke-WebRequest -Uri $rustupUrl -OutFile $rustupExe
-    & $rustupExe -y --quiet
-    Remove-Item $rustupExe
-    # Reload PATH
-    $env:PATH += ";$env:USERPROFILE\.cargo\bin"
-}
-
-# Ensure a default toolchain is set if rustup is present
-if (Test-Command 'rustup') {
-    $default = & rustup default 2>&1
-    if ($null -eq $default -or $default -match "no default toolchain") {
-        Write-Info "No default toolchain detected. Setting to stable..."
-        & rustup default stable
+if ($DO_PROJECTOR) {
+    if (Test-Command 'cargo') {
+        Write-OK "Rust $(rustc --version 2>$null | Select-String '\d+\.\d+' | ForEach-Object { $_.Matches[0].Value }) already installed"
+    } else {
+        Invoke-Optional "Installing Rust via rustup" {
+            $rustupUrl = 'https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe'
+            $rustupExe = "$env:TEMP\rustup-init.exe"
+            Invoke-WebRequest -Uri $rustupUrl -OutFile $rustupExe
+            & $rustupExe -y --quiet
+            Remove-Item $rustupExe
+            $env:PATH += ";$env:USERPROFILE\.cargo\bin"
+        } | Out-Null
     }
-}
-Write-OK "Rust environment verified"
+
+    # Ensure a default toolchain is set if rustup is present
+    if (Test-Command 'rustup') {
+        $toolchainCheck = (& rustup show active-toolchain 2>&1) -join "`n"
+        if ($toolchainCheck -match 'no active toolchain' -or $toolchainCheck -match 'is not installed') {
+            Invoke-Optional "Setting rustup default toolchain to stable" { & rustup default stable } | Out-Null
+        }
+        if (-not (Test-Command 'cargo')) {
+            Invoke-Optional "Repairing Rust toolchain with rustup default stable" { & rustup default stable } | Out-Null
+            $env:PATH += ";$env:USERPROFILE\.cargo\bin"
+        }
+    }
+    Write-OK "Rust environment verified"
 
 # ── weathr ────────────────────────────────────────────────────────────────────
-if (Test-Command 'weathr') {
-    Write-OK "weathr already installed"
-} else {
-    Write-Info "Compiling weathr via Cargo (may take a few minutes)..."
-    cargo install weathr
-    Write-OK "weathr installed"
+    if (Test-Command 'weathr') {
+        Write-OK "weathr already installed"
+    } else {
+        Invoke-Optional "Compiling weathr via Cargo (may take a few minutes)" { cargo install weathr } | Out-Null
+    }
 }
 
 # ── Scoop extras bucket (for some tools) ──────────────────────────────────────
@@ -217,42 +255,44 @@ if ($PKG_MANAGER -eq 'scoop') {
 }
 
 # ── Tool installations ─────────────────────────────────────────────────────────
-Install-Pkg -Name 'fastfetch' -WingetId 'Fastfetch-cli.Fastfetch' -ScoopName 'fastfetch' -ChocoName 'fastfetch'
-Install-Pkg -Name 'btop'      -WingetId 'aristocratos.btop4win'   -ScoopName 'btop'      -ChocoName 'btop'
-Install-Pkg -Name 'lolcat'    -ScoopName 'lolcat'                  -ChocoName 'lolcat'   -TestCmd  'lolcat'
+if ($DO_PROJECTOR) {
+    Install-Pkg -Name 'fastfetch' -WingetId 'Fastfetch-cli.Fastfetch' -ScoopName 'fastfetch' -ChocoName 'fastfetch'
+    Install-Pkg -Name 'btop'      -WingetId 'aristocratos.btop4win'   -ScoopName 'btop'      -ChocoName 'btop'
+    Install-Pkg -Name 'lolcat'    -ScoopName 'lolcat'                  -ChocoName 'lolcat'   -TestCmd  'lolcat'
 
-# cmatrix – Windows port
-if (Test-Command 'cmatrix') {
-    Write-OK "cmatrix already installed"
-} else {
-    Write-Info "Installing cmatrix..."
-    if ($PKG_MANAGER -eq 'scoop')  { scoop install cmatrix }
-    elseif ($PKG_MANAGER -eq 'choco') { choco install cmatrix -y }
-    elseif ($PKG_MANAGER -eq 'winget') {
-        # cmatrix may not be on winget; fallback to scoop install inline
-        Write-Warn "cmatrix may not be in winget. Trying scoop..."
-        if (-not (Test-Command 'scoop')) {
-            Write-Warn "Scoop not available. Install cmatrix manually or via: scoop install cmatrix"
+    # cmatrix – Windows port
+    if (Test-Command 'cmatrix') {
+        Write-OK "cmatrix already installed"
+    } else {
+        Write-Info "Installing cmatrix..."
+        if ($PKG_MANAGER -eq 'scoop')  { Invoke-Optional "Installing cmatrix via scoop" { scoop install cmatrix } | Out-Null }
+        elseif ($PKG_MANAGER -eq 'choco') { Invoke-Optional "Installing cmatrix via choco" { choco install cmatrix -y } | Out-Null }
+        elseif ($PKG_MANAGER -eq 'winget') {
+            Write-Warn "cmatrix may not be in winget. Trying scoop..."
+            if (-not (Test-Command 'scoop')) {
+                Write-Warn "Scoop not available. Install cmatrix manually or via: scoop install cmatrix"
+            } else {
+                Invoke-Optional "Installing cmatrix via scoop fallback" { scoop install cmatrix } | Out-Null
+            }
         } else {
-            scoop install cmatrix
+            Write-Warn "Manual mode: install cmatrix yourself."
         }
+    }
+
+    # cbonsai – compile from source on Windows if not available
+    if (Test-Command 'cbonsai') {
+        Write-OK "cbonsai already installed"
+    } elseif ($PKG_MANAGER -eq 'scoop') {
+        Invoke-Optional "Installing cbonsai via scoop" { scoop install cbonsai } | Out-Null
+    } else {
+        Write-Warn "cbonsai is not available in winget/choco. Install it via Scoop: scoop install cbonsai"
     }
 }
 
-# cbonsai – compile from source on Windows if not available
-if (Test-Command 'cbonsai') {
-    Write-OK "cbonsai already installed"
-} elseif ($PKG_MANAGER -eq 'scoop') {
-    Write-Info "Installing cbonsai via scoop..."
-    scoop install cbonsai
-    Write-OK "cbonsai installed"
-} else {
-    Write-Warn "cbonsai is not available in winget/choco. Install it via Scoop: scoop install cbonsai"
-}
-
 # ── Terminal Check ───────────────────────────────────────────────────
-Write-Host ""
-Write-Info "Checking terminal emulator..."
+if ($DO_TERMINAL) {
+    Write-Host ""
+    Write-Info "Checking terminal emulator..."
 
 function Get-CurrentTerminal {
     if ($env:WT_SESSION)              { return 'windows-terminal' }
@@ -261,50 +301,51 @@ function Get-CurrentTerminal {
     return 'powershell-host'
 }
 
-$currentTerm = Get-CurrentTerminal
+    $currentTerm = Get-CurrentTerminal
 
-if ($currentTerm -eq 'windows-terminal') {
-    Write-OK "Windows Terminal detected – ideal environment detected"
-} else {
-    Write-Warn "Terminal detected: $currentTerm"
-    Write-Host ""
-    Write-Host "  Windows Terminal is the recommended terminal for Terminal Projector." -ForegroundColor Yellow
-    Write-Host "  It provides GPU-accelerated rendering and precise ANSI control." -ForegroundColor White
-    Write-Host ""
-
-    $installWT = Confirm-Choice "  Install Windows Terminal via winget?"
-    if ($installWT) {
-        Write-Info "Installing Windows Terminal..."
-        if ($PKG_MANAGER -eq 'winget') {
-            winget install --id Microsoft.WindowsTerminal --accept-source-agreements --accept-package-agreements -e --silent
-            Write-OK "Windows Terminal installed. Launch it and re-run projector.py inside it for best results."
-        } else {
-            Write-Warn "winget is not available. Please install Windows Terminal from the Microsoft Store."
-        }
+    if ($currentTerm -eq 'windows-terminal') {
+        Write-OK "Windows Terminal detected – ideal environment detected"
     } else {
+        Write-Warn "Terminal detected: $currentTerm"
         Write-Host ""
-        switch ($currentTerm) {
-            'conemu' {
-                Write-Warn "ConEmu detected – functional but may have ANSI rendering issues."
-                Write-Warn "Consider switching to Windows Terminal."
+        Write-Host "  Windows Terminal is the recommended terminal for Terminal Projector." -ForegroundColor Yellow
+        Write-Host "  It provides GPU-accelerated rendering and precise ANSI control." -ForegroundColor White
+        Write-Host ""
+
+        $installWT = Confirm-Choice "  Install Windows Terminal via winget?"
+        if ($installWT) {
+            Write-Info "Installing Windows Terminal..."
+            if ($PKG_MANAGER -eq 'winget') {
+                Invoke-Optional "Installing Windows Terminal" { winget install --id Microsoft.WindowsTerminal --accept-source-agreements --accept-package-agreements -e --silent } | Out-Null
+                Write-OK "Windows Terminal installed. Launch it and re-run projector.py inside it for best results."
+            } else {
+                Write-Warn "winget is not available. Please install Windows Terminal from the Microsoft Store."
             }
-            'powershell-host' {
-                Write-Warn "Raw PowerShell host detected – limited ANSI support."
-                Write-Warn "Install Windows Terminal from the Microsoft Store for a better experience."
-            }
-            default {
-                Write-Warn "Terminal '$currentTerm' detected. No specific overrides applied."
+        } else {
+            Write-Host ""
+            switch ($currentTerm) {
+                'conemu' {
+                    Write-Warn "ConEmu detected – functional but may have ANSI rendering issues."
+                    Write-Warn "Consider switching to Windows Terminal."
+                }
+                'powershell-host' {
+                    Write-Warn "Raw PowerShell host detected – limited ANSI support."
+                    Write-Warn "Install Windows Terminal from the Microsoft Store for a better experience."
+                }
+                default {
+                    Write-Warn "Terminal '$currentTerm' detected. No specific overrides applied."
+                }
             }
         }
     }
-}
 
 # ── Windows Terminal Profile (bonus) ───────────────────────────────────────────
-if ($currentTerm -eq 'windows-terminal') {
-    $settingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
-    if (Test-Path $settingsPath) {
-        Write-Info "Windows Terminal settings detected at $settingsPath"
-        Write-Warn "Tip: Set 'defaultProfile' to a profile with 'opacity': 85 and 'useAcrylic': true for best visuals."
+    if ($currentTerm -eq 'windows-terminal') {
+        $settingsPath = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+        if (Test-Path $settingsPath) {
+            Write-Info "Windows Terminal settings detected at $settingsPath"
+            Write-Warn "Tip: Set 'defaultProfile' to a profile with 'opacity': 85 and 'useAcrylic': true for best visuals."
+        }
     }
 }
 

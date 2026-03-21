@@ -3,7 +3,7 @@
 # terminal-kniferoll | macOS Installer (Shell + Projector)
 # =============================================================================
 
-set -e
+set -Eeuo pipefail
 
 # --- Colors ---
 GREEN='\033[0;32m'
@@ -18,14 +18,64 @@ info() { echo -e "${CYAN}[*] ${1}${RESET}"; }
 warn() { echo -e "${YELLOW}[!] ${1}${RESET}"; }
 die()  { echo -e "${RED}[✘] FATAL: ${1}${RESET}" >&2; exit 1; }
 
+on_error() {
+    local line="$1"
+    local cmd="$2"
+    warn "Unexpected failure at line ${line}: ${cmd}"
+}
+trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
+
+run_optional() {
+    local desc="$1"
+    shift
+    info "$desc"
+    if "$@"; then
+        ok "$desc"
+        return 0
+    fi
+    warn "$desc failed; continuing"
+    return 1
+}
+
+append_if_missing() {
+    local file="$1"
+    local line="$2"
+    touch "$file"
+    grep -Fq "$line" "$file" || echo "$line" >> "$file"
+}
+
+ask_yes_no() {
+    local prompt="$1"
+    if [[ "$MODE" != "interactive" ]]; then
+        return 0
+    fi
+    echo -en "${CYAN}[?] ${prompt} [Y/n] ${RESET}"
+    read -r prompt_reply
+    [[ -z "$prompt_reply" || "$prompt_reply" =~ ^[Yy]$ ]]
+}
+
+ensure_rust_toolchain() {
+    if ! command -v cargo &>/dev/null; then
+        run_optional "Installing Rust via rustup" bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet"
+        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    fi
+    if command -v rustup &>/dev/null && ! cargo --version &>/dev/null; then
+        run_optional "Configuring rustup default stable toolchain" rustup default stable
+        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    fi
+}
+
 # --- Flags ---
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
+MODE="passive"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --shell) INSTALL_PROJECTOR=false ;;
         --projector) INSTALL_SHELL=false ;;
+        --interactive) MODE="interactive" ;;
+        --passive) MODE="passive" ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -33,55 +83,92 @@ done
 
 # --- Homebrew Check ---
 if ! command -v brew &> /dev/null; then
-    info "Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    eval "$(/opt/homebrew/bin/brew shellenv)"
+    run_optional "Installing Homebrew" bash -c "/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
 else
     ok "Homebrew verified"
+fi
+
+if [[ -x /opt/homebrew/bin/brew ]]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
+if command -v brew &>/dev/null; then
+    BREW_BIN="$(command -v brew)"
+    append_if_missing "$HOME/.zprofile" "eval \"\$($BREW_BIN shellenv)\""
+    append_if_missing "$HOME/.zshrc" "eval \"\$($BREW_BIN shellenv)\""
+fi
+
+DO_CORE=true
+DO_SHELL="$INSTALL_SHELL"
+DO_SECURITY=true
+DO_PROJECTOR="$INSTALL_PROJECTOR"
+
+if [[ "$MODE" == "interactive" ]]; then
+    ask_yes_no "Install/update core prerequisites?" || DO_CORE=false
+    if [[ "$INSTALL_SHELL" == "true" ]]; then
+        ask_yes_no "Install shell experience (zsh/oh-my-zsh/plugins/config)?" || DO_SHELL=false
+    fi
+    ask_yes_no "Install security/developer tools (1Password, shared payload, Homebrew gcc, Gemini CLI)?" || DO_SECURITY=false
+    if [[ "$INSTALL_PROJECTOR" == "true" ]]; then
+        ask_yes_no "Install projector stack (Rust/toolchain, weathr, fonts, projector config)?" || DO_PROJECTOR=false
+    fi
 fi
 
 # ── 1. CORE ECOSYSTEM ────────────────────────────────────────────────────────
-if [ "$INSTALL_SHELL" = true ]; then
+if [[ "$DO_CORE" == "true" ]]; then
+    run_optional "Updating Homebrew taps" brew update
+fi
+
+if [ "$DO_SHELL" = true ]; then
     info "Installing shell environment (Oh My Zsh)..."
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        run_optional "Installing Oh My Zsh" bash -c "sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended"
     fi
 fi
 
 # ── 2. SHARED TOOLING PAYLOAD ────────────────────────────────────────────────
-info "Installing shared tooling payload (Homebrew)..."
+if [[ "$DO_SECURITY" == "true" ]]; then
+    info "Installing shared tooling payload (Homebrew)..."
+    BREW_PACKAGES=(
+        1password-cli atuin bat binutils btop ca-certificates cbonsai certifi cmatrix exiftool
+        fastfetch fontconfig freetype fzf gh git gnutls go gzip
+        harfbuzz hashcat hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses ngrep
+        nmap node openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby rustup
+        sd speedtest-cli sqlite tcpdump tealdeer tmux unbound uv wireshark wtfis
+        zoxide zsh-autosuggestions zsh-fast-syntax-highlighting gcc
+    )
+    for pkg in "${BREW_PACKAGES[@]}"; do
+        if brew list "$pkg" &> /dev/null 2>&1; then
+            ok "$pkg verified"
+        else
+            run_optional "Installing $pkg" brew install "$pkg"
+        fi
+    done
 
-BREW_PACKAGES=(
-    1password-cli atuin bat binutils btop ca-certificates cbonsai certifi cmatrix exiftool
-    fastfetch fontconfig freetype fzf gh git gnutls go gzip
-    harfbuzz hashcat hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses ngrep
-    nmap node openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby rustup
-    sd speedtest-cli sqlite tcpdump tealdeer tmux unbound uv wireshark wtfis
-    zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
-)
-
-for pkg in "${BREW_PACKAGES[@]}"; do
-    if ! brew list "$pkg" &> /dev/null 2>&1; then
-        info "Installing $pkg..."
-        brew install "$pkg"
+    if ! command -v gemini &>/dev/null; then
+        run_optional "Installing Gemini CLI via Homebrew" brew install gemini-cli
+        if ! command -v gemini &>/dev/null && command -v npm &>/dev/null; then
+            run_optional "Installing Gemini CLI with npm fallback" npm install -g @google/gemini-cli
+        fi
     else
-        ok "$pkg verified"
+        ok "Gemini CLI already installed"
     fi
-done
+fi
 
 # ── 3. PROJECTOR SPECIFIC DEPS ───────────────────────────────────────────────
-if [ "$INSTALL_PROJECTOR" = true ]; then
-    info "Verifying Projector dependencies (weathr)..."
+if [ "$DO_PROJECTOR" = true ]; then
+    ensure_rust_toolchain
     if ! command -v weathr &>/dev/null; then
-        cargo install weathr
+        run_optional "Installing weathr via cargo" cargo install weathr
     fi
 fi
 
 # ── 4. CONFIG DEPLOYMENT ─────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ "$INSTALL_SHELL" = true ]; then
+if [ "$DO_SHELL" = true ]; then
     info "Deploying shell configurations..."
     mkdir -p "$HOME/.shell"
     cp "$SCRIPT_DIR/shell/zshrc.zsh" "$HOME/.zshrc"
@@ -98,7 +185,7 @@ if [ "$INSTALL_SHELL" = true ]; then
     fi
 fi
 
-if [ "$INSTALL_PROJECTOR" = true ]; then
+if [ "$DO_PROJECTOR" = true ]; then
     info "Deploying Projector configuration..."
     mkdir -p "$HOME/.config/projector"
     if [ ! -f "$HOME/.config/projector/config.json" ]; then
