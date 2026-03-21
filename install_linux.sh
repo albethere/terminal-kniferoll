@@ -36,6 +36,20 @@ run_optional() {
     return 1
 }
 
+download_to_tmp() {
+    local url="$1"
+    local pattern="$2"
+    local tmp_file
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    tmp_file="$(mktemp "/tmp/${pattern}")"
+    umask "$old_umask"
+    chmod 600 "$tmp_file"
+    curl -fsSL "$url" -o "$tmp_file"
+    echo "$tmp_file"
+}
+
 append_if_missing() {
     local file="$1"
     local line="$2"
@@ -55,13 +69,20 @@ ask_yes_no() {
 
 ensure_rust_toolchain() {
     if ! command -v cargo &>/dev/null; then
-        run_optional "Installing Rust via rustup" bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet"
+        local rustup_script
+        rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
+        run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
+        rm -f "$rustup_script"
         [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
     fi
 
     if command -v rustup &>/dev/null; then
-        if ! cargo --version &>/dev/null; then
+        if ! rustup show active-toolchain &>/dev/null; then
             run_optional "Configuring rustup default stable toolchain" rustup default stable
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+        fi
+        if ! cargo --version &>/dev/null; then
+            run_optional "Repairing Rust toolchain via rustup default stable" rustup default stable
             [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
         fi
     fi
@@ -77,10 +98,19 @@ install_1password_cli() {
         run_optional "Installing 1Password apt prerequisites" bash -c "$SUDO apt-get install -y -qq curl gnupg ca-certificates"
         run_optional "Creating 1Password keyring directory" bash -c "$SUDO install -d -m 0755 /usr/share/keyrings"
 
+        local key_ascii_tmp
         local key_tmp
+        local old_umask
+        old_umask="$(umask)"
+        umask 077
+        key_ascii_tmp="$(mktemp /tmp/1password-key-ascii-XXXXXX.asc)"
         key_tmp="$(mktemp /tmp/1password-key-XXXXXX.gpg)"
-        run_optional "Downloading and dearmoring 1Password signing key" bash -c "curl -fsSL https://downloads.1password.com/linux/debian/gpg | gpg --dearmor > '$key_tmp'"
+        umask "$old_umask"
+        chmod 600 "$key_ascii_tmp" "$key_tmp"
+        run_optional "Downloading 1Password signing key" curl -fsSL "https://downloads.1password.com/linux/debian/gpg" -o "$key_ascii_tmp"
+        run_optional "Dearmoring 1Password signing key" bash -c "gpg --dearmor < '$key_ascii_tmp' > '$key_tmp'"
         run_optional "Installing 1Password signing key to trusted keyrings" bash -c "$SUDO install -m 0644 '$key_tmp' /usr/share/keyrings/1password-archive-keyring.gpg"
+        rm -f "$key_ascii_tmp"
         rm -f "$key_tmp"
 
         local arch
@@ -105,7 +135,10 @@ install_homebrew_and_gemini() {
         if [[ "$PKG_MGR" == "apt" ]]; then
             run_optional "Installing Homebrew build prerequisites (apt)" bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
         fi
-        run_optional "Installing Homebrew" bash -c "NONINTERACTIVE=1 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+        local brew_script
+        brew_script="$(download_to_tmp "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "homebrew-install-XXXXXX.sh")"
+        run_optional "Installing Homebrew" env NONINTERACTIVE=1 /bin/bash "$brew_script"
+        rm -f "$brew_script"
 
         if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
             brew_bin="/home/linuxbrew/.linuxbrew/bin/brew"
@@ -120,8 +153,8 @@ install_homebrew_and_gemini() {
 
     if [[ -n "$brew_bin" ]]; then
         eval "$("$brew_bin" shellenv)"
-        append_if_missing "$HOME/.zshrc" "eval \"\$($brew_bin shellenv)\""
-        append_if_missing "$HOME/.bashrc" "eval \"\$($brew_bin shellenv)\""
+        append_if_missing "$HOME/.zshrc" "command -v brew >/dev/null && eval \"\$(brew shellenv)\""
+        append_if_missing "$HOME/.bashrc" "command -v brew >/dev/null && eval \"\$(brew shellenv)\""
 
         run_optional "Updating Homebrew taps" brew update
         run_optional "Installing gcc with Homebrew" brew install gcc
@@ -256,7 +289,15 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             fi
             info "Installing $name from GitHub releases..."
             local url
-            url=$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" | grep browser_download_url | grep "$pattern" | head -1 | cut -d '"' -f4 || true)
+            local curl_args=(-fsSL)
+            if [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+                curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
+            fi
+            if command -v jq &>/dev/null; then
+                url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | jq -r --arg p "$pattern" '.assets[]?.browser_download_url | select(contains($p))' | head -1 || true)
+            else
+                url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | grep browser_download_url | grep "$pattern" | head -1 | cut -d '"' -f4 || true)
+            fi
             [[ -n "$url" ]] || { warn "No ${name} release artifact matched ${pattern}"; return 1; }
             local tmpfile
             tmpfile="$(mktemp /tmp/"$name"-XXXXXX.deb)"
@@ -294,7 +335,10 @@ if [[ "$DO_SHELL" == "true" ]]; then
     fi
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        run_optional "Installing Oh My Zsh" sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        local omz_script
+        omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
+        run_optional "Installing Oh My Zsh" sh "$omz_script" "" --unattended
+        rm -f "$omz_script"
     else
         ok "Oh My Zsh already installed"
     fi

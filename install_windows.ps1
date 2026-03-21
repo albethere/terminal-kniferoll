@@ -229,11 +229,18 @@ if ($DO_PROJECTOR) {
 
     # Ensure a default toolchain is set if rustup is present
     if (Test-Command 'rustup') {
-        $toolchainCheck = (& rustup show active-toolchain 2>&1) -join "`n"
-        if ($toolchainCheck -match 'no active toolchain' -or $toolchainCheck -match 'is not installed') {
+        & rustup show active-toolchain 1>$null 2>$null
+        if ($LASTEXITCODE -ne 0) {
             Invoke-Optional "Setting rustup default toolchain to stable" { & rustup default stable } | Out-Null
         }
-        if (-not (Test-Command 'cargo')) {
+        $cargoHealthy = $false
+        try {
+            & cargo --version | Out-Null
+            $cargoHealthy = $true
+        } catch {
+            $cargoHealthy = $false
+        }
+        if (-not $cargoHealthy) {
             Invoke-Optional "Repairing Rust toolchain with rustup default stable" { & rustup default stable } | Out-Null
             $env:PATH += ";$env:USERPROFILE\.cargo\bin"
         }

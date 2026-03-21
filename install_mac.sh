@@ -37,6 +37,20 @@ run_optional() {
     return 1
 }
 
+download_to_tmp() {
+    local url="$1"
+    local pattern="$2"
+    local tmp_file
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    tmp_file="$(mktemp "/tmp/${pattern}")"
+    umask "$old_umask"
+    chmod 600 "$tmp_file"
+    curl -fsSL "$url" -o "$tmp_file"
+    echo "$tmp_file"
+}
+
 append_if_missing() {
     local file="$1"
     local line="$2"
@@ -56,12 +70,21 @@ ask_yes_no() {
 
 ensure_rust_toolchain() {
     if ! command -v cargo &>/dev/null; then
-        run_optional "Installing Rust via rustup" bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet"
+        local rustup_script
+        rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
+        run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
+        rm -f "$rustup_script"
         [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
     fi
-    if command -v rustup &>/dev/null && ! cargo --version &>/dev/null; then
-        run_optional "Configuring rustup default stable toolchain" rustup default stable
-        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    if command -v rustup &>/dev/null; then
+        if ! rustup show active-toolchain &>/dev/null; then
+            run_optional "Configuring rustup default stable toolchain" rustup default stable
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+        fi
+        if ! cargo --version &>/dev/null; then
+            run_optional "Repairing Rust toolchain via rustup stable default" rustup default stable
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+        fi
     fi
 }
 
@@ -83,7 +106,9 @@ done
 
 # --- Homebrew Check ---
 if ! command -v brew &> /dev/null; then
-    run_optional "Installing Homebrew" bash -c "/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+    brew_script="$(download_to_tmp "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "homebrew-install-XXXXXX.sh")"
+    run_optional "Installing Homebrew" /bin/bash "$brew_script"
+    rm -f "$brew_script"
 else
     ok "Homebrew verified"
 fi
@@ -96,8 +121,7 @@ fi
 
 if command -v brew &>/dev/null; then
     BREW_BIN="$(command -v brew)"
-    append_if_missing "$HOME/.zprofile" "eval \"\$($BREW_BIN shellenv)\""
-    append_if_missing "$HOME/.zshrc" "eval \"\$($BREW_BIN shellenv)\""
+    append_if_missing "$HOME/.zprofile" "command -v brew >/dev/null && eval \"\$(brew shellenv)\""
 fi
 
 DO_CORE=true
@@ -124,7 +148,9 @@ fi
 if [ "$DO_SHELL" = true ]; then
     info "Installing shell environment (Oh My Zsh)..."
     if [ ! -d "$HOME/.oh-my-zsh" ]; then
-        run_optional "Installing Oh My Zsh" bash -c "sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended"
+        omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
+        run_optional "Installing Oh My Zsh" sh "$omz_script" "" --unattended
+        rm -f "$omz_script"
     fi
 fi
 
