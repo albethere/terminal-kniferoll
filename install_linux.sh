@@ -175,14 +175,11 @@ install_homebrew_and_gemini() {
 # --- Flags ---
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
-MODE="passive"
 
 while [[ "$#" -gt 0 ]]; do
-    case "$1" in
+    case $1 in
         --shell) INSTALL_PROJECTOR=false ;;
         --projector) INSTALL_SHELL=false ;;
-        --interactive) MODE="interactive" ;;
-        --passive) MODE="passive" ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -194,6 +191,10 @@ if command -v apt-get &>/dev/null; then
     info "Detected Debian/Ubuntu-based system."
 elif command -v pacman &>/dev/null; then
     PKG_MGR="pacman"
+    info "Detected Arch-based system."
+    AUR_HELPER=""
+    if command -v yay &>/dev/null; then AUR_HELPER="yay"
+    elif command -v paru &>/dev/null; then AUR_HELPER="paru"; fi
     info "Detected Arch/CachyOS-based system."
     if command -v yay &>/dev/null; then
         AUR_HELPER="yay"
@@ -203,7 +204,7 @@ elif command -v pacman &>/dev/null; then
         AUR_HELPER=""
     fi
 else
-    die "Unsupported Linux distribution. No apt or pacman found."
+    die "Unsupported Linux distribution. No apt-get or pacman found."
 fi
 
 SUDO=""
@@ -212,6 +213,83 @@ if [[ "$EUID" -ne 0 ]]; then
     SUDO="sudo"
 fi
 
+# ── 1. CORE ECOSYSTEM ────────────────────────────────────────────────────────
+if [[ "$PKG_MGR" == "apt" ]]; then
+    info "Refreshing apt package list..."
+    $SUDO apt-get update -qq
+elif [[ "$PKG_MGR" == "pacman" ]]; then
+    info "Refreshing pacman package list..."
+    $SUDO pacman -Sy --noconfirm
+fi
+
+# ── 1.5. 1Password CLI (op) ─────────────────────────────────────────────────
+if ! command -v op &>/dev/null; then
+  if [[ "$PKG_MGR" == "apt" ]]; then
+      info "Adding 1Password repository (APT)..."
+      curl -sS https://downloads.1password.com/linux/debian/gpg | $SUDO gpg --dearmor --yes -o /usr/share/keyrings/1password-archive-keyring.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | $SUDO tee /etc/apt/sources.list.d/1password.list
+      mkdir -p "$HOME/.1password" && $SUDO chown -R "$USER":"$USER" "$HOME/.1password"
+      $SUDO apt-get update -qq
+      $SUDO apt-get install -y 1password-cli
+  elif [[ "$PKG_MGR" == "pacman" ]]; then
+      info "Installing 1Password CLI (Pacman)..."
+      $SUDO pacman -S --noconfirm 1password-cli
+  fi
+fi
+
+if [ "$INSTALL_SHELL" = true ]; then
+    info "Installing shell environment (Zsh + Oh My Zsh)..."
+    if ! command -v zsh &>/dev/null; then
+        if [[ "$PKG_MGR" == "apt" ]]; then $SUDO apt-get install -y zsh
+        else $SUDO pacman -S --noconfirm zsh; fi
+        chsh -s "$(which zsh)"
+    fi
+    if [ ! -d "$HOME/.oh-my-zsh" ]; then
+        RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    fi
+fi
+
+# ── 2. SHARED TOOLING PAYLOAD ────────────────────────────────────────────────
+info "Installing shared tooling payload..."
+
+if [[ "$PKG_MGR" == "apt" ]]; then
+    APT_PACKAGES=(
+        1password-cli binutils btop ca-certificates curl exiftool fastfetch fontconfig
+        fzf git gnutls-bin golang gzip hexyl jq libssl-dev lua5.4 lz4 m4 micro
+        ncurses-bin ngrep nmap nodejs openssl pipx python3 python3-pip python3-venv
+        rclone ripgrep ruby rustup speedtest-cli sqlite3 tcpdump tealdeer tmux unbound uv
+        wireshark yara zsh-autosuggestions cmatrix cbonsai
+        nushell yazi atuin zoxide lolcat
+    )
+    for pkg in "${APT_PACKAGES[@]}"; do
+        if dpkg -s "$pkg" &>/dev/null 2>&1; then
+            ok "$pkg verified"
+        else
+            info "Installing $pkg..."
+            $SUDO apt-get install -y -qq "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+elif [[ "$PKG_MGR" == "pacman" ]]; then
+    PACMAN_PACKAGES=(
+        binutils btop ca-certificates curl perl-image-exiftool fastfetch fontconfig
+        fzf git gnutls go gzip hexyl jq openssl lua lz4 m4 micro
+        ncurses ngrep nmap nodejs python-pipx python python-pip
+        rclone ripgrep ruby rustup speedtest-cli sqlite tcpdump tealdeer tmux unbound uv
+        wireshark-cli yara zsh-autosuggestions cmatrix
+        nushell yazi atuin zoxide lolcat
+    )
+    for pkg in "${PACMAN_PACKAGES[@]}"; do
+        if pacman -Qi "$pkg" &>/dev/null; then
+            ok "$pkg verified"
+        else
+            info "Installing $pkg..."
+            $SUDO pacman -S --noconfirm "$pkg" || warn "Could not install $pkg"
+        fi
+    done
+    # cbonsai is AUR on Arch
+    if ! command -v cbonsai &>/dev/null && [[ -n "$AUR_HELPER" ]]; then
+        info "Installing cbonsai via $AUR_HELPER..."
+        $AUR_HELPER -S --noconfirm cbonsai || warn "Could not install cbonsai"
 DO_CORE=true
 DO_SHELL="$INSTALL_SHELL"
 DO_SECURITY=true
@@ -278,6 +356,41 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         fi
     fi
 
+# ── 3. PROJECTOR SPECIFIC DEPS ───────────────────────────────────────────────
+if [ "$INSTALL_PROJECTOR" = true ]; then
+    info "Verifying Projector dependencies (Rust/Cargo, weathr, trippy)..."
+    if ! command -v cargo &>/dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+        # shellcheck disable=SC1091
+        source "$HOME/.cargo/env"
+    fi
+    if ! command -v weathr &>/dev/null; then
+        cargo install weathr
+    fi
+    if ! command -v trip &>/dev/null; then
+        cargo install trippy || warn "Could not install trippy (network pulse scene)"
+    fi
+fi
+
+# ── 4. MODERN RUST/PYTHON CLI TOOLS ──────────────────────────────────────────
+install_github_deb() {
+    local repo="$1"
+    local pattern="$2"
+    local name="$3"
+    if command -v "$name" &>/dev/null; then ok "$name verified"; return; fi
+    if [[ "$PKG_MGR" != "apt" ]]; then return; fi
+    info "Installing $name from GitHub releases..."
+    local url
+    url=$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" \
+        | grep browser_download_url | grep "$pattern" | grep -v musl | head -1 | cut -d '"' -f4)
+    if [ -n "$url" ]; then
+        local tmpfile
+        tmpfile=$(mktemp /tmp/"$name"-XXXXXX.deb)
+        curl -fsSL "$url" -o "$tmpfile"
+        $SUDO dpkg -i "$tmpfile"
+        rm -f "$tmpfile"
+    else
+        warn "Could not find a .deb for $name"
     if [[ "$PKG_MGR" == "apt" ]]; then
         install_github_deb() {
             local repo="$1"
@@ -319,6 +432,48 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
     fi
 
+if ! command -v atuin &>/dev/null; then
+    bash <(curl -fsSL https://setup.atuin.sh) || cargo install atuin
+fi
+if ! command -v zoxide &>/dev/null; then
+    curl -fsSL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+fi
+if ! command -v wtfis &>/dev/null; then
+    pipx install wtfis
+    pipx ensurepath
+fi
+if ! command -v lolcat &>/dev/null; then
+    $SUDO gem install lolcat || pip3 install --quiet lolcat
+fi
+
+# ── 5. ZSH PLUGINS ───────────────────────────────────────────────────────────
+if [ "$INSTALL_SHELL" = true ]; then
+    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+    mkdir -p "$ZSH_CUSTOM/plugins"
+    if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]; then
+        git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+    fi
+    if [ ! -d "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting" ]; then
+        git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting"
+    fi
+fi
+
+# ── 6. JETBRAINSMONO NERD FONT ───────────────────────────────────────────────
+FONT_DIR="$HOME/.local/share/fonts"
+if ! fc-list | grep -qi "JetBrainsMono"; then
+    info "Installing JetBrainsMono Nerd Font..."
+    mkdir -p "$FONT_DIR/JetBrainsMono"
+    TMP_ZIP=$(mktemp /tmp/font-XXXXXX.zip)
+    curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" -o "$TMP_ZIP"
+    unzip -q "$TMP_ZIP" -d "$FONT_DIR/JetBrainsMono"
+    fc-cache -f
+    rm -f "$TMP_ZIP"
+fi
+
+# ── 7. CONFIG DEPLOYMENT ─────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ "$INSTALL_SHELL" = true ]; then
     install_homebrew_and_gemini
 fi
 
@@ -359,6 +514,7 @@ if [[ "$DO_SHELL" == "true" ]]; then
     cp "$SCRIPT_DIR/shell/plugins.zsh" "$HOME/.shell/plugins.zsh"
 fi
 
+if [ "$INSTALL_PROJECTOR" = true ]; then
 if [[ "$DO_PROJECTOR" == "true" ]]; then
     ensure_rust_toolchain
     if command -v cargo &>/dev/null && ! command -v weathr &>/dev/null; then

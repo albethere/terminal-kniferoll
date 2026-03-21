@@ -61,9 +61,6 @@ if [[ -n "$ZSC_PEM" ]]; then
     export GIT_SSL_CAINFO="$ZSC_PEM"
 fi
 
-# --- OPTIONAL ORCHESTRATION (for aliases that need it) ---
-[[ -z "${LCARS_CORE_DIR:-}" && -d "$HOME/Projects/lcars-core" ]] && export LCARS_CORE_DIR="$HOME/Projects/lcars-core"
-
 # --- WTFIS API KEYS ---
 export VT_API_KEY="${PRIVATE_VT_API_KEY:-redacted}"
 export PT_API_KEY="${PRIVATE_PT_API_KEY:-redacted}"
