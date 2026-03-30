@@ -3,13 +3,14 @@ import os
 import sys
 import time
 import json
+import shutil
 import signal
 import argparse
 import platform
 import subprocess
 import threading
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 
 # ==========================================
 # PHASE 1: DATA MODELS & CONFIGURATION
@@ -20,6 +21,8 @@ class Scene:
     command: str
     duration: int
     is_daemon: bool
+    min_width: int = field(default=0)
+    min_height: int = field(default=0)
 
 def get_config_dir() -> Path:
     system = platform.system()
@@ -84,6 +87,12 @@ class SceneExecutor:
         sys.stdout.write("\033[?25h") 
         sys.stdout.flush()
         sys.exit(0)
+
+    def _terminal_fits(self, scene: Scene) -> bool:
+        if scene.min_width == 0 and scene.min_height == 0:
+            return True
+        size = shutil.get_terminal_size(fallback=(80, 24))
+        return size.columns >= scene.min_width and size.lines >= scene.min_height
 
     def execute(self, scene: Scene):
         self.skip_event.clear()
@@ -179,6 +188,12 @@ def main():
     try:
         while True:
             for scene in scenes:
+                if not executor._terminal_fits(scene):
+                    size = shutil.get_terminal_size(fallback=(80, 24))
+                    print(f"[~] Skipping '{scene.name}': terminal {size.columns}x{size.lines} "
+                          f"< required {scene.min_width}x{scene.min_height}")
+                    time.sleep(1)
+                    continue
                 clear_screen()
                 executor.execute(scene)
     except KeyboardInterrupt:

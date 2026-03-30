@@ -1,3 +1,5 @@
+> **Universal directives live in `AGENTS.md`** — read that first. This file contains Gemini-specific context and supplements `AGENTS.md`.
+
 # GEMINI.md: Terminal-Kniferoll Protocol
 
 > **Directive**: Standardized Environment Configuration & Projector Hub
