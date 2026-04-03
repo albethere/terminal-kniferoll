@@ -213,11 +213,24 @@ MODE="${MODE:-batch}"
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
 
+show_help() {
+    echo "Usage: install_linux.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --shell          Install shell environment only (zsh, starship, dotfiles)"
+    echo "  --projector      Install projector tools only (Rust, cargo tools, fonts)"
+    echo "  --interactive    Prompt before each major step instead of running unattended"
+    echo "  --help           Show this help message and exit"
+    echo ""
+    echo "If no options are given, both shell and projector components are installed."
+}
+
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --shell) INSTALL_PROJECTOR=false ;;
         --projector) INSTALL_SHELL=false ;;
         --interactive) MODE=interactive ;;
+        --help) show_help; exit 0 ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -297,7 +310,7 @@ if [[ "$DO_SHELL" == "true" ]]; then
     fi
 
     if command -v zsh &>/dev/null; then
-        run_optional "Setting default shell to zsh" chsh -s "$(command -v zsh)"
+        run_optional "Setting default shell to zsh" bash -c "$SUDO chsh -s '$(command -v zsh)' '$USER'"
     fi
 
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
