@@ -17,6 +17,8 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [switch]$Interactive,
+    [switch]$Shell,
+    [switch]$Projector,
     [Alias('h')]
     [switch]$Help
 )
@@ -69,10 +71,12 @@ function Refresh-Path {
 
 if ($Help) {
     Write-Host @"
-Usage: install_windows.ps1 [-Interactive] [-Help] [-WhatIf]
+Usage: install_windows.ps1 [-Interactive] [-Shell] [-Projector] [-Help] [-WhatIf]
 
 Options:
   -Interactive   Prompt before each section instead of installing everything
+  -Shell         Install only shell experience (skip projector stack)
+  -Projector     Install only projector stack (skip shell experience)
   -Help          Show this help message and exit
   -WhatIf        Preview what would happen without making changes
 
@@ -111,6 +115,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIde
 )
 if (-not $isAdmin) {
     Write-Warn 'Not running as Administrator - some installs may request elevation.'
+    Write-Warn 'winget/choco may silently hang waiting for UAC. Consider re-running as Administrator.'
 }
 
 # ── ExecutionPolicy ──────────────────────────────────────────────────────────
@@ -195,10 +200,14 @@ function Install-Pkg {
 
 # ── Interactive Questions ────────────────────────────────────────────────────
 
+# -Shell means skip projector; -Projector means skip shell; neither means both
+$INSTALL_SHELL     = -not $Projector -or $Shell
+$INSTALL_PROJECTOR = -not $Shell     -or $Projector
+
 $DO_CORE      = Ask-YesNo 'Install core prerequisites (git, python, golang, nodejs)?'
-$DO_SHELL     = Ask-YesNo 'Install shell experience (PSReadLine, Terminal-Icons, oh-my-posh)?'
+$DO_SHELL     = $INSTALL_SHELL     -and (Ask-YesNo 'Install shell experience (PSReadLine, Terminal-Icons, oh-my-posh)?')
 $DO_SECURITY  = Ask-YesNo 'Install security/developer tools (1Password CLI, shared payload)?'
-$DO_PROJECTOR = Ask-YesNo 'Install projector stack (Rust, cargo tools, fonts)?'
+$DO_PROJECTOR = $INSTALL_PROJECTOR -and (Ask-YesNo 'Install projector stack (Rust, cargo tools, fonts)?')
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. CORE PREREQUISITES
@@ -241,6 +250,10 @@ if ($DO_SHELL) {
         $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
         if (-not $nuget -or $nuget.Version -lt [version]'2.8.5.201') {
             Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+            $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+            if (-not $nuget) {
+                throw 'NuGet provider installation failed - Install-Module may not work'
+            }
         }
     }
 
@@ -382,9 +395,11 @@ if ($DO_PROJECTOR) {
     if (Test-Cmd 'rustup') {
         $healthy = $false
         try {
-            & rustup show active-toolchain 2>&1 | Out-Null
+            $toolchainOut = & rustup show active-toolchain 2>&1
             if ($LASTEXITCODE -eq 0) { $healthy = $true }
-        } catch {}
+        } catch {
+            Write-Warn "Could not verify Rust toolchain: $($_.Exception.Message)"
+        }
         if (-not $healthy) {
             Invoke-Step 'Repairing Rust toolchain' { & rustup default stable 2>&1 | Out-Null }
         }
@@ -393,11 +408,15 @@ if ($DO_PROJECTOR) {
     # Cargo tools
     if (Test-Cmd 'cargo') {
         $cargoTools = @(
-            @{ Name = 'bat';    Crate = 'bat';    Cmd = 'bat' }
-            @{ Name = 'lsd';    Crate = 'lsd';    Cmd = 'lsd' }
-            @{ Name = 'sd';     Crate = 'sd';     Cmd = 'sd' }
-            @{ Name = 'weathr'; Crate = 'weathr'; Cmd = 'weathr' }
-            @{ Name = 'trippy'; Crate = 'trippy'; Cmd = 'trip' }
+            @{ Name = 'bat';      Crate = 'bat';      Cmd = 'bat' }
+            @{ Name = 'lsd';      Crate = 'lsd';      Cmd = 'lsd' }
+            @{ Name = 'sd';       Crate = 'sd';       Cmd = 'sd' }
+            @{ Name = 'nu';       Crate = 'nu';       Cmd = 'nu' }
+            @{ Name = 'yazi-fm';  Crate = 'yazi-fm';  Cmd = 'yazi' }
+            @{ Name = 'yazi-cli'; Crate = 'yazi-cli'; Cmd = 'ya' }
+            @{ Name = 'atuin';    Crate = 'atuin';    Cmd = 'atuin' }
+            @{ Name = 'weathr';   Crate = 'weathr';   Cmd = 'weathr' }
+            @{ Name = 'trippy';   Crate = 'trippy';   Cmd = 'trip' }
         )
         foreach ($t in $cargoTools) {
             if (Test-Cmd $t.Cmd) {
@@ -422,7 +441,10 @@ if ($DO_PROJECTOR) {
         Invoke-Step 'Installing JetBrainsMono Nerd Font' {
             $fontZip = Join-Path $env:USERPROFILE 'JetBrainsMono.zip'
             $fontExtract = Join-Path $env:USERPROFILE 'JetBrainsMono_nf'
-            Invoke-WebRequest -Uri 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip' -OutFile $fontZip -UseBasicParsing
+            Invoke-WebRequest -Uri 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip' -OutFile $fontZip -UseBasicParsing -ErrorAction Stop
+            if (-not (Test-Path $fontZip) -or (Get-Item $fontZip).Length -lt 1024) {
+                throw "Font download failed or file is too small ($(if (Test-Path $fontZip) { (Get-Item $fontZip).Length } else { 0 }) bytes)"
+            }
             Expand-Archive -Path $fontZip -DestinationPath $fontExtract -Force
             $shell = New-Object -ComObject Shell.Application
             $fontsFolder = $shell.Namespace(0x14)
