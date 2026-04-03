@@ -4,6 +4,7 @@
 # =============================================================================
 
 set -Eeuo pipefail
+export HOMEBREW_NO_AUTO_UPDATE=1
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -200,12 +201,15 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         ok "1Password CLI already installed"
     else
         run_optional "Installing 1Password CLI" brew install --cask 1password-cli
+        if ! command -v op &>/dev/null; then
+            warn "1Password CLI (op) not found on PATH after install"
+        fi
     fi
     mkdir -p "$HOME/.1password"
 
     info "Installing shared tooling payload (Homebrew)..."
     BREW_PACKAGES=(
-        atuin bat binutils btop ca-certificates cbonsai certifi cmatrix exiftool
+        atuin bat binutils btop ca-certificates cbonsai cmatrix exiftool
         fastfetch fontconfig freetype fzf gcc gh git gnutls go gzip
         harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro mise ncurses ngrep
         nmap node nushell openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby
@@ -257,7 +261,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         TMP_EXTRACT="$(mktemp -d /tmp/font-extract-XXXXXX)"
         run_optional "Downloading JetBrainsMono Nerd Font" curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" -o "$TMP_ZIP"
         run_optional "Extracting JetBrainsMono Nerd Font" unzip -q "$TMP_ZIP" -d "$TMP_EXTRACT"
-        find "$TMP_EXTRACT" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
+        run_optional "Copying JetBrainsMono font files" find "$TMP_EXTRACT" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
         rm -rf "$TMP_ZIP" "$TMP_EXTRACT"
     else
         ok "JetBrainsMono Nerd Font already installed"
@@ -266,7 +270,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
     info "Deploying Projector configuration..."
     mkdir -p "$HOME/.config/projector"
     [[ -f "$HOME/.config/projector/config.json" ]] || cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
-    [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py"
+    [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py" || true
 fi
 
 ok "Installation Complete!"
