@@ -12,6 +12,26 @@ C_BLUE="\033[38;5;75m"
 C_PURPLE="\033[38;5;135m"
 C_RESET="\033[0m"
 
+# --- Help ---
+show_help() {
+    echo "Usage: ./install.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --shell          Install shell environment only (zsh, starship, dotfiles)"
+    echo "  --projector      Install projector tools only (tmux, session configs)"
+    echo "  --interactive    Prompt before each major step instead of running unattended"
+    echo "  --help           Show this help message and exit"
+    echo ""
+    echo "If no options are given, both shell and projector components are installed."
+}
+
+for arg in "$@"; do
+    if [[ "$arg" == "--help" ]]; then
+        show_help
+        exit 0
+    fi
+done
+
 echo -e "${C_PURPLE}================================================================${C_RESET}"
 echo -e "${C_ORANGE}  ■■■■■■■  ${C_BLUE}T E R M I N A L   K N I F E R O L L${C_RESET}"
 echo -e "${C_PURPLE}================================================================${C_RESET}"
@@ -28,13 +48,12 @@ case "$OS_TYPE" in
         echo -e "[*] Detected macOS environment. Delegating to install_mac.sh..."
         bash "$SCRIPT_DIR/install_mac.sh" "$@"
         ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo -e "[*] Detected Windows (Git Bash/MSYS2). Delegating to install_windows.ps1..."
+        powershell.exe -ExecutionPolicy Bypass -File "$SCRIPT_DIR/install_windows.ps1" "$@"
+        ;;
     *)
-        if [[ -n "$WSL_DISTRO_NAME" ]]; then
-            echo -e "[*] Detected WSL environment. Delegating to install_linux.sh..."
-            bash "$SCRIPT_DIR/install_linux.sh" "$@"
-        else
-            echo -e "[!] Unsupported OS: $OS_TYPE. Attempting Windows PowerShell if applicable..."
-            # Implementation for Windows handover if needed
-        fi
+        echo -e "[!] Unsupported OS: $OS_TYPE"
+        exit 1
         ;;
 esac
