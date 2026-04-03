@@ -4,6 +4,7 @@
 # =============================================================================
 
 set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -75,17 +76,17 @@ ensure_rust_toolchain() {
         rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
         run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
         rm -f "$rustup_script"
-        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
     fi
 
     if command -v rustup &>/dev/null; then
         if ! rustup show active-toolchain &>/dev/null; then
             run_optional "Configuring rustup default stable toolchain" rustup default stable
-            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
         fi
         if ! cargo --version &>/dev/null; then
             run_optional "Repairing Rust toolchain via rustup default stable" rustup default stable
-            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
         fi
     fi
 }
@@ -195,11 +196,11 @@ install_github_deb() {
         curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
     fi
     if command -v jq &>/dev/null; then
-        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | jq -r --arg p "$pattern" '.assets[]?.browser_download_url | select(contains($p))' | head -1 || true)
+        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | jq -r --arg p "$pattern" '.assets[]?.browser_download_url | select(test($p))' | head -1 || true)
     else
-        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | grep browser_download_url | grep "$pattern" | head -1 | cut -d '"' -f4 || true)
+        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | grep browser_download_url | grep -E "$pattern" | head -1 | cut -d '"' -f4 || true)
     fi
-    [[ -n "$url" ]] || { warn "No ${name} release artifact matched ${pattern}"; return 1; }
+    [[ -n "$url" ]] || { warn "No ${name} release artifact matched ${pattern}"; return 0; }
     local tmpfile
     tmpfile="$(mktemp /tmp/"$name"-XXXXXX.deb)"
     run_optional "Downloading ${name} release package" curl -fsSL "$url" -o "$tmpfile"
@@ -323,8 +324,8 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             binutils btop exiftool fastfetch fzf git gnutls-bin golang gzip hexyl jq
             libssl-dev lua5.4 lz4 m4 micro ncurses-bin ngrep nmap nodejs openssl pipx
             python3 python3-pip python3-venv rclone ripgrep ruby rustup speedtest-cli
-            sqlite3 tcpdump tealdeer tmux unbound uv wireshark yara zsh-autosuggestions
-            cmatrix cbonsai nushell yazi mise atuin zoxide starship
+            sqlite3 tcpdump tealdeer tmux unbound wireshark yara zsh-autosuggestions
+            cmatrix cbonsai zoxide starship
         )
         for pkg in "${APT_PACKAGES[@]}"; do
             if dpkg -s "$pkg" &>/dev/null 2>&1; then
@@ -333,6 +334,31 @@ if [[ "$DO_SECURITY" == "true" ]]; then
                 run_optional "Installing $pkg" bash -c "$SUDO apt-get install -y -qq '$pkg'"
             fi
         done
+
+        # Packages not in Debian 12 repos — install via dedicated methods
+        if ! command -v uv &>/dev/null; then
+            run_optional "Installing uv via pipx" pipx install uv
+        fi
+        if ! command -v nu &>/dev/null; then
+            if command -v cargo &>/dev/null; then
+                run_optional "Installing nushell via cargo" cargo install nu
+            else
+                warn "nushell not available (not in apt, no cargo); skipping"
+            fi
+        fi
+        if ! command -v yazi &>/dev/null; then
+            if command -v cargo &>/dev/null; then
+                run_optional "Installing yazi via cargo" cargo install yazi-fm yazi-cli
+            else
+                warn "yazi not available (not in apt, no cargo); skipping"
+            fi
+        fi
+        if ! command -v mise &>/dev/null; then
+            run_optional "Installing mise via install script" bash -c 'curl -fsSL https://mise.jdx.dev/install.sh | sh'
+        fi
+        if ! command -v atuin &>/dev/null; then
+            run_optional "Installing atuin via install script" bash -c 'curl -fsSL https://setup.atuin.sh | sh'
+        fi
     else
         PACMAN_PACKAGES=(
             binutils btop exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
@@ -354,9 +380,17 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         fi
     fi
 
-    install_github_deb "lsd-rs/lsd" "amd64.deb" "lsd"
-    install_github_deb "sharkdp/bat" "amd64.deb" "bat"
-    install_github_deb "chmln/sd" "x86_64-unknown-linux-gnu" "sd"
+    install_github_deb "lsd-rs/lsd" "lsd_.*_amd64\\.deb" "lsd"
+    install_github_deb "sharkdp/bat" "bat_[0-9].*_amd64\\.deb" "bat"
+
+    # sd ships as .tar.gz, not .deb — install via cargo as fallback
+    if ! command -v sd &>/dev/null; then
+        if command -v cargo &>/dev/null; then
+            run_optional "Installing sd via cargo" cargo install sd
+        else
+            warn "sd not available (no .deb, no cargo); skipping"
+        fi
+    fi
 
     if ! command -v wtfis &>/dev/null; then
         run_optional "Installing wtfis with pipx" pipx install wtfis
