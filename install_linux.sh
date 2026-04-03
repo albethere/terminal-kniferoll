@@ -28,12 +28,12 @@ run_optional() {
     local desc="$1"
     shift
     info "$desc"
-    if "$@"; then
+    if (set +Ee; "$@"); then
         ok "$desc"
         return 0
     fi
     warn "$desc failed; continuing"
-    return 1
+    return 0
 }
 
 download_to_tmp() {
@@ -109,7 +109,12 @@ install_1password_cli() {
         key_tmp="$(mktemp /tmp/1password-key-XXXXXX.gpg)"
         umask "$old_umask"
         chmod 600 "$key_ascii_tmp" "$key_tmp"
-        run_optional "Downloading 1Password signing key" curl -fsSL "https://downloads.1password.com/linux/debian/gpg" -o "$key_ascii_tmp"
+        run_optional "Downloading 1Password signing key" curl -fsSL "https://downloads.1password.com/linux/keys/1password.asc" -o "$key_ascii_tmp"
+        if [[ ! -s "$key_ascii_tmp" ]]; then
+            warn "1Password signing key download produced an empty file; skipping 1Password setup"
+            rm -f "$key_ascii_tmp" "$key_tmp"
+            return 0
+        fi
         run_optional "Dearmoring 1Password signing key" bash -c "gpg --dearmor < '$key_ascii_tmp' > '$key_tmp'"
         run_optional "Installing 1Password signing key to trusted keyrings" bash -c "$SUDO install -m 0644 '$key_tmp' /usr/share/keyrings/1password-archive-keyring.gpg"
         rm -f "$key_ascii_tmp"
