@@ -1,24 +1,40 @@
-#requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     terminal-kniferoll | Windows Installer
 .DESCRIPTION
-    Installs all dependencies for terminal-kniferoll on Windows.
-    Uses winget as primary package manager with chocolatey fallback.
-.PARAMETER Interactive
-    Prompt before each major section instead of installing everything.
+    Installs the full terminal-kniferoll stack on Windows.
+    Uses winget (primary) → Scoop (secondary) → Chocolatey (tertiary).
+    Deploys a PowerShell profile with Oh My Posh, PSReadLine, Terminal-Icons,
+    zoxide, fzf, posh-git, and shell aliases matching the Unix side.
+.PARAMETER Full
+    Install everything: Shell + Projector (default when no flag given).
+.PARAMETER Shell
+    Install shell experience only (Oh My Posh, PS modules, profile, aliases).
+.PARAMETER Projector
+    Install projector tools only (fastfetch, cmatrix, Python).
+.PARAMETER Custom
+    Interactively choose which groups to install.
 .PARAMETER Help
     Show this help message and exit.
+.EXAMPLE
+    .\install_windows.ps1
+    .\install_windows.ps1 -Shell
+    .\install_windows.ps1 -Projector
+    .\install_windows.ps1 -Custom
+    .\install_windows.ps1 -Full
 .NOTES
-    Run as Administrator for full functionality.
-    PowerShell 7+ recommended for best compatibility.
+    Run from a standard (non-elevated) PowerShell session when possible.
+    Some winget operations may prompt for UAC elevation automatically.
+    PowerShell 5.1+ required; PowerShell 7+ recommended.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$Interactive,
+    [switch]$Full,
     [switch]$Shell,
     [switch]$Projector,
+    [switch]$Custom,
     [Alias('h')]
     [switch]$Help
 )
@@ -26,26 +42,143 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
-# ── Colors / Logging ─────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════════════════════════════
 
-function Write-OK   { param([string]$m) Write-Host "[OK] $m" -ForegroundColor Green }
-function Write-Info { param([string]$m) Write-Host " *  $m" -ForegroundColor Cyan }
-function Write-Warn { param([string]$m) Write-Host " !  $m" -ForegroundColor Yellow }
-function Write-Die  { param([string]$m) Write-Host "[!!] FATAL: $m" -ForegroundColor Red; exit 1 }
+$LogDir  = "$env:USERPROFILE\.terminal-kniferoll\logs"
+$LogFile = "$LogDir\install_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+function Write-Log {
+    param(
+        [ValidateSet('INFO','OK','WARN','ERROR')][string]$Level,
+        [string]$Message
+    )
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line  = "[$stamp] [$Level] $Message"
+    Add-Content -Path $LogFile -Value $line -Encoding UTF8
+}
+
+function Write-OK   { param([string]$m) Write-Host "[`u{2713}] $m" -ForegroundColor Green;  Write-Log OK   $m }
+function Write-Info { param([string]$m) Write-Host "[*] $m"        -ForegroundColor Cyan;   Write-Log INFO $m }
+function Write-Warn { param([string]$m) Write-Host "[~] $m"        -ForegroundColor Yellow; Write-Log WARN $m }
+function Write-Err  { param([string]$m) Write-Host "[x] $m"        -ForegroundColor Red;    Write-Log ERROR $m }
+function Write-Die  { param([string]$m) Write-Err "FATAL: $m"; exit 1 }
+
+function Write-Section {
+    param([string]$Title)
+    $bar = '─' * 66
+    Write-Host ''
+    Write-Host "  $bar" -ForegroundColor DarkCyan
+    Write-Host "  $Title" -ForegroundColor Cyan
+    Write-Host "  $bar" -ForegroundColor DarkCyan
+    Write-Log INFO "=== $Title ==="
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELP
+# ══════════════════════════════════════════════════════════════════════════════
+
+if ($Help) {
+    Write-Host @'
+
+  terminal-kniferoll  |  Windows Installer
+
+  USAGE
+      .\install_windows.ps1 [OPTIONS]
+
+  OPTIONS
+      (none)        Interactive menu — pick from 4 grouped choices
+      -Full         Install everything (Shell + Projector)
+      -Shell        Shell experience only (Oh My Posh, PS profile, aliases)
+      -Projector    Projector tools only (fastfetch, cmatrix, Python)
+      -Custom       Choose individual tool groups interactively
+      -Help         Show this help and exit
+
+  INSTALL GROUPS
+      [1] Full        Shell environment + Terminal projector  (recommended)
+      [2] Shell only  PowerShell profile + Oh My Posh + plugins + aliases
+      [3] Projector   Terminal animation suite (fastfetch, cmatrix, Python)
+      [4] Custom      Choose individual tool groups
+
+  PACKAGE MANAGER PRIORITY
+      1. winget   (built-in Windows 10 1809+)
+      2. Scoop    (user-space, no elevation)
+      3. Chocolatey (tertiary fallback)
+
+  LOG FILE
+      %USERPROFILE%\.terminal-kniferoll\logs\install_<timestamp>.log
+
+'@
+    exit 0
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BANNER
+# ══════════════════════════════════════════════════════════════════════════════
+
+Write-Host ''
+Write-Host '  ╔══════════════════════════════════════════════════════════════╗' -ForegroundColor DarkMagenta
+Write-Host '  ║   T E R M I N A L   K N I F E R O L L                      ║' -ForegroundColor Cyan
+Write-Host '  ║   Windows Installer  //  winget + Scoop + PS modules        ║' -ForegroundColor DarkCyan
+Write-Host '  ╚══════════════════════════════════════════════════════════════╝' -ForegroundColor DarkMagenta
+Write-Host ''
+Write-Host "  Log → $LogFile" -ForegroundColor DarkGray
+Write-Host ''
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENVIRONMENT CHECKS
+# ══════════════════════════════════════════════════════════════════════════════
+
+# PowerShell version gate (redundant with #Requires but gives a clear message)
+if ($PSVersionTable.PSVersion.Major -lt 5) {
+    Write-Die "PowerShell 5.1 or newer is required. Current: $($PSVersionTable.PSVersion)"
+}
+Write-Info "PowerShell $($PSVersionTable.PSVersion) detected"
+
+# Admin check
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+if ($isAdmin) {
+    Write-Info "Running as Administrator"
+} else {
+    Write-Warn "Not running as Administrator — winget and module installs may prompt for UAC"
+}
+
+# WSL detection
+$wslPresent = Test-Path "$env:SystemRoot\system32\wsl.exe"
+if ($wslPresent) {
+    Write-Info "WSL detected — tip: run install_linux.sh inside WSL for a full Zsh/Oh-My-Zsh environment"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UTILITY FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
 
 function Test-Cmd {
     param([string]$Name)
     [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Ask-YesNo {
-    param([string]$Prompt)
-    if (-not $script:Interactive) { return $true }
-    $choice = Read-Host "[?] $Prompt [Y/n]"
-    return ($choice -eq '' -or $choice -match '^[Yy]$')
+function Refresh-EnvPath {
+    $machinePath = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    $userPath    = [System.Environment]::GetEnvironmentVariable('PATH', 'User')
+    $env:PATH    = "$machinePath;$userPath"
+    $extraPaths  = @(
+        "$env:USERPROFILE\.cargo\bin",
+        "$env:USERPROFILE\scoop\shims",
+        "$env:USERPROFILE\AppData\Local\Programs\oh-my-posh\bin"
+    )
+    foreach ($p in $extraPaths) {
+        if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) {
+            $env:PATH += ";$p"
+        }
+    }
 }
 
-function Invoke-Step {
+function Invoke-Optional {
     param(
         [string]$Description,
         [scriptblock]$Action
@@ -54,442 +187,438 @@ function Invoke-Step {
     try {
         & $Action
         Write-OK $Description
+        return $true
     } catch {
-        Write-Warn "$Description failed: $($_.Exception.Message)"
+        Write-Warn "$Description — $($_.Exception.Message)"
+        return $false
     }
 }
 
-function Refresh-Path {
-    $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' +
-                [System.Environment]::GetEnvironmentVariable('PATH', 'User')
-    if (Test-Path "$env:USERPROFILE\.cargo\bin") {
-        $env:PATH += ";$env:USERPROFILE\.cargo\bin"
+# ══════════════════════════════════════════════════════════════════════════════
+# PACKAGE MANAGER BOOTSTRAP
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Initialize-PackageManagers {
+    Write-Section "Package Manager Bootstrap"
+
+    # ── winget ──
+    if (Test-Cmd winget) {
+        Write-OK "winget available — $(winget --version 2>$null)"
+    } else {
+        Write-Warn "winget not found. Install 'App Installer' from the Microsoft Store, or upgrade to Windows 10 1809+."
+    }
+
+    # ── Scoop ──
+    if (Test-Cmd scoop) {
+        Write-OK "Scoop already installed"
+    } else {
+        Invoke-Optional "Installing Scoop (user-space)" {
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+            Invoke-RestMethod get.scoop.sh | Invoke-Expression
+            Refresh-EnvPath
+        }
+    }
+
+    # Scoop extras bucket (has many tools)
+    if (Test-Cmd scoop) {
+        $buckets = scoop bucket list 2>$null
+        if ($buckets -notmatch 'extras') {
+            Invoke-Optional "Adding Scoop extras bucket" { scoop bucket add extras }
+        }
+        if ($buckets -notmatch 'nerd-fonts') {
+            Invoke-Optional "Adding Scoop nerd-fonts bucket" { scoop bucket add nerd-fonts }
+        }
+    }
+
+    # ── Chocolatey ──
+    if (Test-Cmd choco) {
+        Write-OK "Chocolatey already installed"
+    } else {
+        Invoke-Optional "Installing Chocolatey" {
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+            Refresh-EnvPath
+        }
     }
 }
 
-# ── Help ─────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# WINGET INSTALL HELPER
+# ══════════════════════════════════════════════════════════════════════════════
 
-if ($Help) {
-    Write-Host @"
-Usage: install_windows.ps1 [-Interactive] [-Shell] [-Projector] [-Help] [-WhatIf]
-
-Options:
-  -Interactive   Prompt before each section instead of installing everything
-  -Shell         Install only shell experience (skip projector stack)
-  -Projector     Install only projector stack (skip shell experience)
-  -Help          Show this help message and exit
-  -WhatIf        Preview what would happen without making changes
-
-Sections installed:
-  Core       git, python, golang, nodejs
-  Shell      PowerShell modules (PSReadLine, Terminal-Icons, oh-my-posh), profile
-  Security   1Password CLI, shared payload tools (fzf, ripgrep, jq, etc.)
-  Projector  Rust toolchain, cargo tools (bat, lsd, sd, weathr), fonts, config
-
-Without -Interactive, all sections are installed (batch mode).
-"@
-    exit 0
+function Install-Winget {
+    param(
+        [string]$Id,
+        [string]$DisplayName,
+        [string]$CheckCmd = ''
+    )
+    if ($CheckCmd -and (Test-Cmd $CheckCmd)) {
+        Write-OK "$DisplayName already installed"
+        return
+    }
+    if (-not (Test-Cmd winget)) {
+        Write-Warn "winget not available — skipping $DisplayName"
+        return
+    }
+    Invoke-Optional "Installing $DisplayName via winget" {
+        winget install --id $Id --silent --accept-package-agreements --accept-source-agreements --no-upgrade 2>&1 | Out-Null
+        Refresh-EnvPath
+    }
 }
 
-# ── Banner ───────────────────────────────────────────────────────────────────
-
-Write-Host ''
-Write-Host '  ================================================================' -ForegroundColor Magenta
-Write-Host '    T E R M I N A L   K N I F E R O L L' -ForegroundColor Cyan
-Write-Host '  ================================================================' -ForegroundColor Magenta
-Write-Host '  Windows Installer' -ForegroundColor Cyan
-Write-Host ''
-
-# ── Windows Version Gate ─────────────────────────────────────────────────────
-
-$winVer = [System.Environment]::OSVersion.Version
-if ($winVer.Major -lt 10) {
-    Write-Die "Windows 10+ required. Detected: $($winVer.ToString())"
-}
-Write-OK "Windows $($winVer.Major).$($winVer.Minor) build $($winVer.Build)"
-
-# ── Admin Check ──────────────────────────────────────────────────────────────
-
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator
-)
-if (-not $isAdmin) {
-    Write-Warn 'Not running as Administrator - some installs may request elevation.'
-    Write-Warn 'winget/choco may silently hang waiting for UAC. Consider re-running as Administrator.'
+function Install-Scoop {
+    param(
+        [string]$Package,
+        [string]$DisplayName = '',
+        [string]$CheckCmd = ''
+    )
+    if ($DisplayName -eq '') { $DisplayName = $Package }
+    if ($CheckCmd -and (Test-Cmd $CheckCmd)) {
+        Write-OK "$DisplayName already installed"
+        return
+    }
+    if (-not (Test-Cmd scoop)) {
+        Write-Warn "Scoop not available — skipping $DisplayName"
+        return
+    }
+    Invoke-Optional "Installing $DisplayName via Scoop" {
+        scoop install $Package 2>&1 | Out-Null
+        Refresh-EnvPath
+    }
 }
 
-# ── ExecutionPolicy ──────────────────────────────────────────────────────────
-
-try {
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction Stop
-    Write-OK 'ExecutionPolicy: RemoteSigned (CurrentUser)'
-} catch {
-    Write-Warn "Could not set ExecutionPolicy: $_"
-}
-
-# ── Package Manager Detection ────────────────────────────────────────────────
-
-Write-Info 'Detecting package manager...'
-
-$PKG = $null
-
-if (Test-Cmd 'winget') {
-    $PKG = 'winget'
-    Write-OK 'winget detected (primary)'
-} elseif (Test-Cmd 'choco') {
-    $PKG = 'choco'
-    Write-OK 'Chocolatey detected (fallback)'
-} else {
-    Write-Warn 'No package manager found (winget / choco).'
-    Write-Warn 'winget ships with Windows 10/11 via App Installer from the Microsoft Store.'
-    $PKG = 'manual'
-}
-
-# ── Install Helper ───────────────────────────────────────────────────────────
-
-function Install-Pkg {
-    [CmdletBinding(SupportsShouldProcess)]
+function Install-PsModule {
     param(
         [string]$Name,
-        [string]$WingetId  = '',
-        [string]$ChocoName = '',
-        [string]$TestCmd   = $Name
+        [switch]$Force,
+        [switch]$AllowClobber
     )
-
-    if (Test-Cmd $TestCmd) {
-        Write-OK "$Name already installed"
+    if (Get-Module -ListAvailable -Name $Name -ErrorAction SilentlyContinue) {
+        Write-OK "PS module $Name already installed"
         return
     }
-
-    if (-not $PSCmdlet.ShouldProcess($Name, 'Install')) { return }
-
-    Write-Info "Installing $Name..."
-    $installed = $false
-
-    if ($script:PKG -eq 'winget' -and $WingetId) {
-        try {
-            & winget install --id $WingetId --accept-source-agreements --accept-package-agreements -e --silent 2>&1 | Out-Null
-            $installed = $true
-        } catch {
-            Write-Warn "winget failed for $Name; trying choco fallback..."
-        }
-    }
-
-    if (-not $installed -and $ChocoName -and (Test-Cmd 'choco')) {
-        try {
-            & choco install $ChocoName -y 2>&1 | Out-Null
-            $installed = $true
-        } catch {
-            Write-Warn "choco also failed for $Name."
-        }
-    }
-
-    if (-not $installed -and $script:PKG -eq 'manual') {
-        Write-Warn "Manual mode: install $Name yourself."
-        return
-    }
-
-    Refresh-Path
-
-    if (Test-Cmd $TestCmd) {
-        Write-OK "$Name installed"
-    } else {
-        Write-Warn "$Name may not be in PATH yet. Restart your terminal after this script."
-    }
-}
-
-# ── Interactive Questions ────────────────────────────────────────────────────
-
-# -Shell means skip projector; -Projector means skip shell; neither means both
-$INSTALL_SHELL     = -not $Projector -or $Shell
-$INSTALL_PROJECTOR = -not $Shell     -or $Projector
-
-$DO_CORE      = Ask-YesNo 'Install core prerequisites (git, python, golang, nodejs)?'
-$DO_SHELL     = $INSTALL_SHELL     -and (Ask-YesNo 'Install shell experience (PSReadLine, Terminal-Icons, oh-my-posh)?')
-$DO_SECURITY  = Ask-YesNo 'Install security/developer tools (1Password CLI, shared payload)?'
-$DO_PROJECTOR = $INSTALL_PROJECTOR -and (Ask-YesNo 'Install projector stack (Rust, cargo tools, fonts)?')
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. CORE PREREQUISITES
-# ══════════════════════════════════════════════════════════════════════════════
-
-if ($DO_CORE) {
-    Write-Host ''
-    Write-Info '── Core Prerequisites ──'
-
-    Install-Pkg -Name 'Git'      -WingetId 'Git.Git'            -ChocoName 'git'        -TestCmd 'git'
-    Install-Pkg -Name 'Python'   -WingetId 'Python.Python.3.12' -ChocoName 'python3'    -TestCmd 'python'
-    Install-Pkg -Name 'Go'       -WingetId 'GoLang.Go'          -ChocoName 'golang'     -TestCmd 'go'
-    Install-Pkg -Name 'Node.js'  -WingetId 'OpenJS.NodeJS.LTS'  -ChocoName 'nodejs-lts' -TestCmd 'node'
-
-    if (Test-Cmd 'python') {
-        try {
-            $pyVer = & python --version 2>&1
-            if ($pyVer -match '(\d+)\.(\d+)') {
-                $maj = [int]$Matches[1]; $min = [int]$Matches[2]
-                if ($maj -lt 3 -or ($maj -eq 3 -and $min -lt 10)) {
-                    Write-Warn "Python $($Matches[0]) found but 3.10+ recommended."
-                } else {
-                    Write-OK "Python $($Matches[0]) verified"
-                }
-            }
-        } catch { Write-Warn 'Could not verify Python version.' }
+    $args = @{ Name = $Name; Scope = 'CurrentUser'; ErrorAction = 'Stop' }
+    if ($Force)       { $args['Force'] = $true }
+    if ($AllowClobber){ $args['AllowClobber'] = $true }
+    Invoke-Optional "Installing PowerShell module $Name" {
+        Install-Module @args
     }
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. SHELL EXPERIENCE
+# SHELL INSTALL
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ($DO_SHELL) {
-    Write-Host ''
-    Write-Info '── Shell Experience ──'
+function Install-ShellExperience {
+    Write-Section "Shell Experience"
 
-    # NuGet provider (required for Install-Module)
-    Invoke-Step 'Ensuring NuGet package provider' {
-        $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
-        if (-not $nuget -or $nuget.Version -lt [version]'2.8.5.201') {
+    # ── Core CLI tools ──
+    Install-Winget  'Git.Git'                    'Git'       'git'
+    Install-Winget  'JanDeDobbeleer.OhMyPosh'    'Oh My Posh' 'oh-my-posh'
+    Install-Winget  'junegunn.fzf'               'fzf'       'fzf'
+    Install-Winget  'ajeetdsouza.zoxide'         'zoxide'    'zoxide'
+    Install-Winget  'sharkdp.bat'                'bat'       'bat'
+    Install-Winget  'BurntSushi.ripgrep.MSVC'    'ripgrep'   'rg'
+    Install-Winget  'Neovim.Neovim'              'Neovim'    'nvim'
+    Install-Scoop   'lsd'                        'lsd'       'lsd'
+    Install-Scoop   'btop'                       'btop'      'btop'
+
+    # ── Nerd Font (CascadiaCode NF via Oh My Posh) ──
+    if (Test-Cmd oh-my-posh) {
+        Invoke-Optional "Installing CascadiaCode Nerd Font via Oh My Posh" {
+            oh-my-posh font install CascadiaCode 2>&1 | Out-Null
+        }
+    } elseif (Test-Cmd scoop) {
+        Install-Scoop 'CascadiaCode-NF' 'CascadiaCode Nerd Font'
+    }
+
+    # ── PowerShell Modules ──
+    Write-Section "PowerShell Modules"
+
+    # Ensure NuGet provider is available (required for Install-Module)
+    if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+        Invoke-Optional "Installing NuGet package provider" {
             Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
-            $nuget = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
-            if (-not $nuget) {
-                throw 'NuGet provider installation failed - Install-Module may not work'
-            }
         }
     }
 
-    # PSReadLine
-    Invoke-Step 'Installing/updating PSReadLine' {
-        Install-Module -Name PSReadLine -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+    # Trust PSGallery silently
+    $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+    if ($psGallery -and $psGallery.InstallationPolicy -ne 'Trusted') {
+        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
     }
 
-    # Terminal-Icons
-    if (Get-Module -ListAvailable -Name Terminal-Icons) {
-        Write-OK 'Terminal-Icons already installed'
-    } else {
-        Invoke-Step 'Installing Terminal-Icons' {
-            Install-Module -Name Terminal-Icons -Scope CurrentUser -Force -ErrorAction Stop
-        }
-    }
+    Install-PsModule 'posh-git'         -AllowClobber
+    Install-PsModule 'PSReadLine'       -Force -AllowClobber
+    Install-PsModule 'Terminal-Icons'   -Force
+    Install-PsModule 'PSFzf'            -Force
 
-    # oh-my-posh
-    if (Test-Cmd 'oh-my-posh') {
-        Write-OK 'oh-my-posh already installed'
-    } else {
-        Install-Pkg -Name 'oh-my-posh' -WingetId 'JanDeDobbeleer.OhMyPosh' -ChocoName 'oh-my-posh' -TestCmd 'oh-my-posh'
-    }
-
-    # Windows Terminal
-    if ($env:WT_SESSION) {
-        Write-OK 'Windows Terminal detected'
-    } else {
-        Write-Warn 'Windows Terminal recommended for best experience.'
-        Install-Pkg -Name 'Windows Terminal' -WingetId 'Microsoft.WindowsTerminal' -ChocoName 'microsoft-windows-terminal' -TestCmd 'wt'
-    }
-
-    # PowerShell profile
-    $profileDir = Split-Path -Parent $PROFILE
-    if (-not (Test-Path $profileDir)) {
-        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-    }
-
-    $profileBlock = @'
-
-# ── terminal-kniferoll ──
-if (Get-Module -ListAvailable -Name PSReadLine) {
-    Import-Module PSReadLine
-    Set-PSReadLineOption -PredictionSource History
-    Set-PSReadLineOption -PredictionViewStyle ListView
-    Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+    # ── Deploy PowerShell Profile ──
+    Deploy-PSProfile
 }
-if (Get-Module -ListAvailable -Name Terminal-Icons) {
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POWERSHELL PROFILE DEPLOYMENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Deploy-PSProfile {
+    Write-Section "PowerShell Profile"
+
+    $profileDir = Split-Path $PROFILE -Parent
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+    }
+
+    # Back up existing profile
+    if (Test-Path $PROFILE) {
+        $backup = "$PROFILE.bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Copy-Item $PROFILE $backup -Force
+        Write-Info "Existing profile backed up → $backup"
+    }
+
+    $profileContent = @'
+# ==============================================================================
+# terminal-kniferoll | PowerShell Profile
+# Generated by install_windows.ps1
+# ==============================================================================
+
+# ── Oh My Posh ────────────────────────────────────────────────────────────────
+if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
+    $ompTheme = "$env:POSH_THEMES_PATH\jandedobbeleer.omp.json"
+    if (-not (Test-Path $ompTheme)) {
+        $ompTheme = "jandedobbeleer"
+    }
+    oh-my-posh init pwsh --config $ompTheme | Invoke-Expression
+}
+
+# ── PSReadLine (autosuggestions + syntax highlighting) ────────────────────────
+if (Get-Module -ListAvailable PSReadLine) {
+    Import-Module PSReadLine
+    Set-PSReadLineOption -PredictionSource HistoryAndPlugin
+    Set-PSReadLineOption -PredictionViewStyle ListView
+    Set-PSReadLineOption -EditMode Windows
+    Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+    Set-PSReadLineKeyHandler -Key UpArrow   -Function HistorySearchBackward
+    Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+    Set-PSReadLineOption -Colors @{
+        Command   = 'Cyan'
+        Parameter = 'DarkCyan'
+        String    = 'Green'
+        Keyword   = 'Magenta'
+        Comment   = 'DarkGray'
+        Error     = 'Red'
+    }
+}
+
+# ── Terminal-Icons ────────────────────────────────────────────────────────────
+if (Get-Module -ListAvailable Terminal-Icons) {
     Import-Module Terminal-Icons
 }
-if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
-    oh-my-posh init pwsh | Invoke-Expression
+
+# ── posh-git ──────────────────────────────────────────────────────────────────
+if (Get-Module -ListAvailable posh-git) {
+    Import-Module posh-git
 }
+
+# ── zoxide ────────────────────────────────────────────────────────────────────
 if (Get-Command zoxide -ErrorAction SilentlyContinue) {
     Invoke-Expression (& { (zoxide init powershell | Out-String) })
 }
-# ── end terminal-kniferoll ──
+
+# ── fzf / PSFzf ───────────────────────────────────────────────────────────────
+if ((Get-Command fzf -ErrorAction SilentlyContinue) -and (Get-Module -ListAvailable PSFzf)) {
+    Import-Module PSFzf
+    Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -PSReadlineChordReverseHistory 'Ctrl+r'
+}
+
+# ── Aliases & Functions ───────────────────────────────────────────────────────
+
+# ls replacements
+if (Get-Command lsd -ErrorAction SilentlyContinue) {
+    function ls  { lsd $args }
+    function l   { lsd -l $args }
+    function la  { lsd -la $args }
+    function ll  { lsd -lA $args }
+    function lr  { lsd -latr $args }
+    function lt  { lsd --tree $args }
+} else {
+    function l  { Get-ChildItem $args }
+    function la { Get-ChildItem -Force $args }
+    function ll { Get-ChildItem -Force $args | Format-List }
+}
+
+# cat replacement
+if (Get-Command bat -ErrorAction SilentlyContinue) {
+    function cat { bat $args }
+}
+
+# Editor
+if (Get-Command nvim -ErrorAction SilentlyContinue) {
+    Set-Alias vim  nvim
+    Set-Alias vi   nvim
+    Set-Alias nano nvim
+}
+
+# Networking
+function myip  { (Invoke-WebRequest -Uri 'https://icanhazip.com' -UseBasicParsing).Content.Trim() }
+
+# Shell management
+function reload { . $PROFILE; Write-Host "Profile reloaded." -ForegroundColor Cyan }
+function ff     {
+    if (Get-Command fastfetch -ErrorAction SilentlyContinue) { fastfetch }
+    else { Write-Host "fastfetch not installed." -ForegroundColor Yellow }
+}
+
+# Navigation
+function ..   { Set-Location .. }
+function ...  { Set-Location ..\.. }
+function .... { Set-Location ..\..\.. }
+
+# Git shortcuts
+function gs { git status }
+function ga { git add $args }
+function gc { git commit $args }
+function gp { git push }
+function gl { git --no-pager log --oneline -10 }
+function gd { git --no-pager diff }
+function gb { git branch $args }
+function gco { git checkout $args }
+function gpl { git pull }
+
+# Grep
+if (Get-Command rg -ErrorAction SilentlyContinue) {
+    Set-Alias grep rg
+}
+
+# ── PRIVATE API Keys (loaded from environment, never hardcoded) ───────────────
+# Set these in your user environment or a secrets manager:
+#   $env:PRIVATE_VT_API_KEY, $env:PRIVATE_PT_API_KEY, etc.
+if ($env:PRIVATE_VT_API_KEY)       { $env:VT_API_KEY        = $env:PRIVATE_VT_API_KEY }
+if ($env:PRIVATE_PT_API_KEY)       { $env:PT_API_KEY        = $env:PRIVATE_PT_API_KEY }
+if ($env:PRIVATE_PT_API_USER)      { $env:PT_API_USER       = $env:PRIVATE_PT_API_USER }
+if ($env:PRIVATE_IP2WHOIS_API_KEY) { $env:IP2WHOIS_API_KEY  = $env:PRIVATE_IP2WHOIS_API_KEY }
+if ($env:PRIVATE_SHODAN_API_KEY)   { $env:SHODAN_API_KEY    = $env:PRIVATE_SHODAN_API_KEY }
+if ($env:PRIVATE_GREYNOISE_API_KEY){ $env:GREYNOISE_API_KEY = $env:PRIVATE_GREYNOISE_API_KEY }
+if ($env:PRIVATE_ABUSEIPDB_API_KEY){ $env:ABUSEIPDB_API_KEY = $env:PRIVATE_ABUSEIPDB_API_KEY }
+
+# ── Welcome ───────────────────────────────────────────────────────────────────
+if (Get-Command fastfetch -ErrorAction SilentlyContinue) {
+    fastfetch
+}
 '@
 
-    if (Test-Path $PROFILE) {
-        $existing = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
-        if ($existing -and $existing.Contains('terminal-kniferoll')) {
-            Write-OK 'PowerShell profile already configured'
-        } else {
-            Add-Content -Path $PROFILE -Value $profileBlock
-            Write-OK "PowerShell profile updated: $PROFILE"
-        }
-    } else {
-        Set-Content -Path $PROFILE -Value $profileBlock.TrimStart()
-        Write-OK "PowerShell profile created: $PROFILE"
+    try {
+        Set-Content -Path $PROFILE -Value $profileContent -Encoding UTF8 -Force
+        Write-OK "PowerShell profile deployed → $PROFILE"
+    } catch {
+        Write-Warn "Could not write profile: $($_.Exception.Message)"
     }
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. SECURITY / DEVELOPER TOOLS
+# PROJECTOR INSTALL
 # ══════════════════════════════════════════════════════════════════════════════
 
-if ($DO_SECURITY) {
-    Write-Host ''
-    Write-Info '── Security / Developer Tools ──'
+function Install-Projector {
+    Write-Section "Projector Stack"
 
-    # 1Password CLI
-    Install-Pkg -Name '1Password CLI' -WingetId 'AgileBits.1Password.CLI' -ChocoName '1password-cli' -TestCmd 'op'
+    Install-Winget 'fastfetch-cli.fastfetch' 'fastfetch' 'fastfetch'
+    Install-Winget 'Python.Python.3.12'      'Python 3.12' 'python'
+    Install-Scoop  'cmatrix'                 'cmatrix'   'cmatrix'
 
-    # Shared payload tools with Windows builds
-    Install-Pkg -Name 'fzf'       -WingetId 'junegunn.fzf'            -ChocoName 'fzf'       -TestCmd 'fzf'
-    Install-Pkg -Name 'ripgrep'   -WingetId 'BurntSushi.ripgrep.MSVC' -ChocoName 'ripgrep'   -TestCmd 'rg'
-    Install-Pkg -Name 'jq'        -WingetId 'jqlang.jq'               -ChocoName 'jq'        -TestCmd 'jq'
-    Install-Pkg -Name 'fastfetch' -WingetId 'Fastfetch-cli.Fastfetch' -ChocoName 'fastfetch' -TestCmd 'fastfetch'
-    Install-Pkg -Name 'btop'      -WingetId 'aristocratos.btop4win'   -ChocoName 'btop'      -TestCmd 'btop'
-    Install-Pkg -Name 'hexyl'     -WingetId 'sharkdp.hexyl'           -ChocoName 'hexyl'     -TestCmd 'hexyl'
-    Install-Pkg -Name 'starship'  -WingetId 'Starship.Starship'       -ChocoName 'starship'  -TestCmd 'starship'
-    Install-Pkg -Name 'zoxide'    -WingetId 'ajeetdsouza.zoxide'      -ChocoName 'zoxide'    -TestCmd 'zoxide'
-    Install-Pkg -Name 'tealdeer'  -WingetId 'dbrgn.tealdeer'          -ChocoName 'tealdeer'  -TestCmd 'tldr'
-    Install-Pkg -Name 'micro'     -WingetId 'zyedidia.micro'          -ChocoName 'micro'     -TestCmd 'micro'
-    Install-Pkg -Name 'sqlite'    -WingetId 'SQLite.SQLite'           -ChocoName 'sqlite'    -TestCmd 'sqlite3'
-    Install-Pkg -Name 'nmap'      -WingetId 'Insecure.Nmap'           -ChocoName 'nmap'      -TestCmd 'nmap'
-    Install-Pkg -Name 'rclone'    -WingetId 'Rclone.Rclone'           -ChocoName 'rclone'    -TestCmd 'rclone'
-    Install-Pkg -Name 'mise'      -WingetId 'jdx.mise'                -ChocoName 'mise'      -TestCmd 'mise'
+    # cbonsai: no native Windows build available
+    Write-Warn "cbonsai — no native Windows binary; run inside WSL if desired"
 
-    # pipx + wtfis (requires Python)
-    if (Test-Cmd 'python') {
-        if (-not (Test-Cmd 'pipx')) {
-            Invoke-Step 'Installing pipx' { & python -m pip install --user pipx 2>&1 | Out-Null }
-            Refresh-Path
-        }
-        if ((Test-Cmd 'pipx') -and -not (Test-Cmd 'wtfis')) {
-            Invoke-Step 'Installing wtfis via pipx' {
-                & pipx install wtfis 2>&1 | Out-Null
-                & pipx ensurepath 2>&1 | Out-Null
-            }
-        }
-    }
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. PROJECTOR STACK
-# ══════════════════════════════════════════════════════════════════════════════
-
-if ($DO_PROJECTOR) {
-    Write-Host ''
-    Write-Info '── Projector Stack ──'
-
-    # Rust / Cargo
-    if (Test-Cmd 'cargo') {
-        Write-OK 'Rust/Cargo already installed'
-    } else {
-        Install-Pkg -Name 'Rust (rustup)' -WingetId 'Rustlang.Rustup' -ChocoName 'rustup.install' -TestCmd 'rustup'
-        if (Test-Cmd 'rustup') {
-            Invoke-Step 'Setting default Rust toolchain to stable' {
-                & rustup default stable 2>&1 | Out-Null
-            }
-            $env:PATH += ";$env:USERPROFILE\.cargo\bin"
-            Refresh-Path
-        }
-    }
-
-    # Verify toolchain health
-    if (Test-Cmd 'rustup') {
-        $healthy = $false
+    # Run projector.py if available
+    $scriptDir   = Split-Path $MyInvocation.PSCommandPath -Parent
+    $projectorPy = Join-Path $scriptDir 'projector.py'
+    if ((Test-Path $projectorPy) -and (Test-Cmd python)) {
+        Write-Info "Launching projector.py…"
         try {
-            $toolchainOut = & rustup show active-toolchain 2>&1
-            if ($LASTEXITCODE -eq 0) { $healthy = $true }
+            & python $projectorPy
         } catch {
-            Write-Warn "Could not verify Rust toolchain: $($_.Exception.Message)"
+            Write-Warn "projector.py failed: $($_.Exception.Message)"
         }
-        if (-not $healthy) {
-            Invoke-Step 'Repairing Rust toolchain' { & rustup default stable 2>&1 | Out-Null }
-        }
-    }
-
-    # Cargo tools
-    if (Test-Cmd 'cargo') {
-        $cargoTools = @(
-            @{ Name = 'bat';      Crate = 'bat';      Cmd = 'bat' }
-            @{ Name = 'lsd';      Crate = 'lsd';      Cmd = 'lsd' }
-            @{ Name = 'sd';       Crate = 'sd';       Cmd = 'sd' }
-            @{ Name = 'nu';       Crate = 'nu';       Cmd = 'nu' }
-            @{ Name = 'yazi-fm';  Crate = 'yazi-fm';  Cmd = 'yazi' }
-            @{ Name = 'yazi-cli'; Crate = 'yazi-cli'; Cmd = 'ya' }
-            @{ Name = 'atuin';    Crate = 'atuin';    Cmd = 'atuin' }
-            @{ Name = 'weathr';   Crate = 'weathr';   Cmd = 'weathr' }
-            @{ Name = 'trippy';   Crate = 'trippy';   Cmd = 'trip' }
-        )
-        foreach ($t in $cargoTools) {
-            if (Test-Cmd $t.Cmd) {
-                Write-OK "$($t.Name) already installed"
-            } else {
-                Invoke-Step "Installing $($t.Name) via cargo (may take a few minutes)" {
-                    & cargo install $t.Crate 2>&1 | Out-Null
-                }
-            }
-        }
-    } else {
-        Write-Warn 'Cargo not available - skipping cargo tool installs.'
-    }
-
-    # JetBrainsMono Nerd Font
-    $fontDir = "$env:LOCALAPPDATA\Microsoft\Windows\Fonts"
-    $fontInstalled = $false
-    if (Test-Path $fontDir) {
-        $fontInstalled = @(Get-ChildItem $fontDir -Filter '*JetBrainsMono*' -ErrorAction SilentlyContinue).Count -gt 0
-    }
-    if (-not $fontInstalled) {
-        Invoke-Step 'Installing JetBrainsMono Nerd Font' {
-            $fontZip = Join-Path $env:USERPROFILE 'JetBrainsMono.zip'
-            $fontExtract = Join-Path $env:USERPROFILE 'JetBrainsMono_nf'
-            Invoke-WebRequest -Uri 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip' -OutFile $fontZip -UseBasicParsing -ErrorAction Stop
-            if (-not (Test-Path $fontZip) -or (Get-Item $fontZip).Length -lt 1024) {
-                throw "Font download failed or file is too small ($(if (Test-Path $fontZip) { (Get-Item $fontZip).Length } else { 0 }) bytes)"
-            }
-            Expand-Archive -Path $fontZip -DestinationPath $fontExtract -Force
-            $shell = New-Object -ComObject Shell.Application
-            $fontsFolder = $shell.Namespace(0x14)
-            Get-ChildItem $fontExtract -Filter '*.ttf' | ForEach-Object {
-                $fontsFolder.CopyHere($_.FullName, 0x14)
-            }
-            Remove-Item $fontZip -Force -ErrorAction SilentlyContinue
-            Remove-Item $fontExtract -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    } else {
-        Write-OK 'JetBrainsMono Nerd Font already installed'
-    }
-
-    # Projector config
-    $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $configDir = Join-Path $env:APPDATA 'projector'
-    $configFile = Join-Path $configDir 'config.json'
-    $defaultCfg = Join-Path $SCRIPT_DIR 'projector\config.json.default'
-
-    if (-not (Test-Path $configDir)) {
-        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-    }
-    if (-not (Test-Path $configFile) -and (Test-Path $defaultCfg)) {
-        Copy-Item $defaultCfg $configFile
-        Write-OK "Projector config deployed to $configFile"
-    } elseif (Test-Path $configFile) {
-        Write-OK 'Projector config already exists'
-    }
-
-    # projector.bat shim
-    $projectorPy = Join-Path $SCRIPT_DIR 'projector.py'
-    if (Test-Path $projectorPy) {
-        $batContent = "@echo off`r`npython `"$projectorPy`" %*"
-        Set-Content -Path (Join-Path $SCRIPT_DIR 'projector.bat') -Value $batContent -Encoding ASCII
-        Write-OK 'Created projector.bat launcher'
     }
 }
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# INSTALL MODE SELECTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+$doShell     = $false
+$doProjector = $false
+
+if ($Full -or (-not $Shell -and -not $Projector -and -not $Custom -and -not $Full)) {
+    # Default (no flags) → show interactive menu
+    if (-not $Full) {
+        Write-Host ''
+        Write-Host '  Select install mode:' -ForegroundColor White
+        Write-Host ''
+        Write-Host '    [1]  Full        Shell environment + Terminal projector  (recommended)' -ForegroundColor Cyan
+        Write-Host '    [2]  Shell only  PowerShell profile + Oh My Posh + plugins + aliases' -ForegroundColor Cyan
+        Write-Host '    [3]  Projector   Terminal animation suite (fastfetch, cmatrix, Python)' -ForegroundColor Cyan
+        Write-Host '    [4]  Custom      Choose individual tool groups' -ForegroundColor Cyan
+        Write-Host ''
+        $choice = Read-Host '  Enter choice [1-4] (default: 1)'
+        if ($choice -eq '') { $choice = '1' }
+
+        switch ($choice) {
+            '1' { $doShell = $true; $doProjector = $true }
+            '2' { $doShell = $true }
+            '3' { $doProjector = $true }
+            '4' {
+                $ans = Read-Host '  Install Shell experience? [Y/n]'
+                if ($ans -eq '' -or $ans -match '^[Yy]') { $doShell = $true }
+                $ans = Read-Host '  Install Projector stack? [Y/n]'
+                if ($ans -eq '' -or $ans -match '^[Yy]') { $doProjector = $true }
+            }
+            default { Write-Warn "Unknown choice '$choice' — defaulting to Full"; $doShell = $true; $doProjector = $true }
+        }
+    } else {
+        # -Full flag
+        $doShell     = $true
+        $doProjector = $true
+    }
+} else {
+    if ($Shell)     { $doShell = $true }
+    if ($Projector) { $doProjector = $true }
+    if ($Custom) {
+        $ans = Read-Host '  Install Shell experience? [Y/n]'
+        if ($ans -eq '' -or $ans -match '^[Yy]') { $doShell = $true }
+        $ans = Read-Host '  Install Projector stack? [Y/n]'
+        if ($ans -eq '' -or $ans -match '^[Yy]') { $doProjector = $true }
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXECUTE
+# ══════════════════════════════════════════════════════════════════════════════
+
+Initialize-PackageManagers
+
+if ($doShell)     { Install-ShellExperience }
+if ($doProjector) { Install-Projector }
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DONE
+# ══════════════════════════════════════════════════════════════════════════════
 
 Write-Host ''
-Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Green
-Write-Host '  Installation complete!' -ForegroundColor Green
-Write-Host "  Launch with: python projector.py" -ForegroundColor Green
-Write-Host "  Config at:   $env:APPDATA\projector\config.json" -ForegroundColor Green
-Write-Host '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' -ForegroundColor Green
+Write-Host '  ╔══════════════════════════════════════════════════════════════╗' -ForegroundColor DarkGreen
+Write-Host '  ║   [✓]  Installation complete!                               ║' -ForegroundColor Green
+Write-Host '  ╚══════════════════════════════════════════════════════════════╝' -ForegroundColor DarkGreen
 Write-Host ''
-Write-Warn 'Restart your terminal to ensure all PATH changes take effect.'
+if ($doShell) {
+    Write-Host '  Next steps:' -ForegroundColor White
+    Write-Host '    1. Restart your terminal (or run: . $PROFILE)' -ForegroundColor DarkCyan
+    Write-Host '    2. Set your Windows Terminal font to "CaskaydiaCove Nerd Font"' -ForegroundColor DarkCyan
+    Write-Host '    3. Enjoy your new shell  ¯\_(ツ)_/¯' -ForegroundColor DarkCyan
+}
+if ($wslPresent -and -not $doShell) {
+    Write-Host '  WSL tip: run install_linux.sh inside WSL for a full Zsh environment' -ForegroundColor DarkYellow
+}
+Write-Host ''
+Write-Host "  Full log: $LogFile" -ForegroundColor DarkGray
+Write-Host ''
