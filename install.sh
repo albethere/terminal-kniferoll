@@ -17,12 +17,12 @@ show_help() {
     echo "Usage: ./install.sh [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --shell          Install shell environment only (zsh, starship, dotfiles)"
-    echo "  --projector      Install projector tools only (tmux, session configs)"
-    echo "  --interactive    Prompt before each major step instead of running unattended"
+    echo "  --shell          Install shell environment only (zsh, oh-my-zsh, dotfiles)"
+    echo "  --projector      Install projector tools only (Rust, cargo tools, fonts)"
+    echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
-    echo "If no options are given, both shell and projector components are installed."
+    echo "With no options: shows a 4-choice install menu (TTY) or full install (non-TTY)."
 }
 
 for arg in "$@"; do

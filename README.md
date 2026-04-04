@@ -17,7 +17,7 @@ cd terminal-kniferoll
 | Platform | Command |
 |----------|---------|
 | macOS    | `./install.sh` or `./install_mac.sh` |
-| Linux    | `./install.sh` or `./install_linux.sh` (or `install-v2.sh` on Debian/Ubuntu) |
+| Linux    | `./install.sh` or `./install_linux.sh` |
 | Windows  | `powershell -ExecutionPolicy Bypass -File install_windows.ps1` (projector; full stack via WSL) |
 
 ## How it works
@@ -41,8 +41,7 @@ cd terminal-kniferoll
 terminal-kniferoll/
 ├── install.sh           # Universal entrypoint
 ├── install_mac.sh       # macOS
-├── install_linux.sh     # Linux
-├── install-v2.sh        # Linux (v2: batch installs, flavor text)
+├── install_linux.sh     # Linux (merged from v2; canonical)
 ├── install_windows.ps1  # Windows (projector)
 ├── projector.py
 ├── shell/               # zshrc, aliases, plugins

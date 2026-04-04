@@ -42,367 +42,485 @@ FAILED_TOOLS=()
 on_error() { warn "Unexpected failure at line $1: $2"; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
+# ── Helper: run with soft failure ────────────────────────────────────────────
 run_optional() {
-    local desc="$1"
-    shift
+    local desc="$1"; shift
     info "$desc"
-    if (set +Ee; "$@"); then
-        ok "$desc"
-        return 0
-    fi
-    warn "$desc failed; continuing"
+    if (set +Ee; "$@"); then ok "$desc"; return 0; fi
+    warn "$desc — failed, continuing"
     return 0
 }
 
+# ── Helper: download URL to a secure temp file ───────────────────────────────
 download_to_tmp() {
-    local url="$1"
-    local pattern="$2"
-    local tmp_file
-    local old_umask
+    local url="$1" pattern="$2" tmp_file old_umask
     old_umask="$(umask)"
     umask 077
     tmp_file="$(mktemp "/tmp/${pattern}")"
     umask "$old_umask"
     chmod 600 "$tmp_file"
-    # Security: enforce HTTPS and TLS 1.2+ on all install-script fetches
     curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp_file"
     echo "$tmp_file"
 }
 
+# ── Helper: append line to file if absent ────────────────────────────────────
 append_if_missing() {
-    local file="$1"
-    local line="$2"
+    local file="$1" line="$2"
     touch "$file"
     grep -Fq "$line" "$file" || echo "$line" >> "$file"
 }
 
+# ── Helper: yes/no prompt ────────────────────────────────────────────────────
 ask_yes_no() {
     local prompt="$1"
-    if [[ "$MODE" != "interactive" ]]; then
-        return 0
-    fi
     echo -en "${CYAN}[?] ${prompt} [Y/n] ${RESET}"
-    read -r prompt_reply
-    [[ -z "$prompt_reply" || "$prompt_reply" =~ ^[Yy]$ ]]
+    read -r _reply
+    [[ -z "$_reply" || "$_reply" =~ ^[Yy]$ ]]
 }
 
-# --- Feature Functions ---
+# ── Helper: check if binary is on PATH ───────────────────────────────────────
+is_installed() { command -v "$1" &>/dev/null; }
 
+# ── Helper: apt single-package install (skip if present) ─────────────────────
+apt_install() {
+    local check_bin="$1" pkg="$2" desc="${3:-$2}"
+    if is_installed "$check_bin"; then skip "$desc already installed"; return 0; fi
+    info "Installing $desc..."
+    if sudo apt-get install -y --fix-missing -q "$pkg" 2>&1 | tail -3; then
+        ok "$desc installed"
+    else
+        warn "$desc install failed — logged"
+        FAILED_TOOLS+=("$pkg")
+    fi
+}
+
+# ── Helper: apt batch install ────────────────────────────────────────────────
+apt_batch() {
+    local section="$1"; shift
+    local to_install=()
+    banner "$section"
+    for entry in "$@"; do
+        local bin="${entry%%:*}" pkg="${entry##*:}"
+        if is_installed "$bin" || dpkg -s "$pkg" &>/dev/null 2>&1; then
+            skip "$pkg"
+        else
+            to_install+=("$pkg")
+        fi
+    done
+    if [[ ${#to_install[@]} -eq 0 ]]; then
+        quip "Nothing new here — pantry stocked."; return 0
+    fi
+    info "Installing: ${to_install[*]}"
+    if sudo apt-get install -y --fix-missing -q "${to_install[@]}" 2>&1 | \
+        grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
+        ok "$section — complete"
+    else
+        warn "Partial failure in $section — check log"
+        for pkg in "${to_install[@]}"; do FAILED_TOOLS+=("$pkg"); done
+    fi
+}
+
+# ── Helper: cargo install (skip if present) ──────────────────────────────────
+cargo_install() {
+    local check_bin="$1" crate="$2" name="${3:-$2}"
+    if is_installed "$check_bin"; then skip "$name already installed"; return 0; fi
+    if ! is_installed "cargo"; then
+        warn "cargo not found — skipping $name"; FAILED_TOOLS+=("${name}(cargo)"); return 0
+    fi
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
+    info "Compiling $name via cargo..."
+    if cargo install "$crate"; then ok "$name compiled and ready"
+    else warn "cargo install failed for $name"; FAILED_TOOLS+=("${name}(cargo)"); fi
+}
+
+# ── Helper: install .deb from GitHub releases (arch-aware) ───────────────────
+install_github_deb() {
+    local check_bin="$1" repo="$2" pattern="$3" name="$4"
+    if is_installed "$check_bin"; then skip "$name already installed"; return 0; fi
+    [[ "$PKG_MGR" == "apt" ]] || return 0
+    info "Installing $name from GitHub releases..."
+    local url curl_args=(-fsSL)
+    [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] && \
+        curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
+    # Try native arch first, then any match
+    url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
+        | grep browser_download_url | grep -E "$pattern" | grep -v musl | head -1 | cut -d'"' -f4 || true)
+    [[ -z "$url" ]] && \
+        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
+            | grep browser_download_url | grep -E "$pattern" | head -1 | cut -d'"' -f4 || true)
+    if [[ -z "$url" ]]; then
+        warn "No release .deb found for $name matching $pattern"
+        FAILED_TOOLS+=("${name}(github)"); return 0
+    fi
+    local tmp_deb
+    tmp_deb="$(mktemp "/tmp/${name}-XXXXXX.deb")"
+    if curl -fsSL -o "$tmp_deb" "$url"; then
+        sudo dpkg -i "$tmp_deb" || sudo apt-get install -f -y -q || true
+        ok "$name installed from GitHub"
+    else
+        warn "Download failed for $name"; FAILED_TOOLS+=("${name}(github)")
+    fi
+    rm -f "$tmp_deb"
+}
+
+# ── Feature: ensure Rust toolchain ───────────────────────────────────────────
 ensure_rust_toolchain() {
-    if ! command -v cargo &>/dev/null; then
+    if ! is_installed "cargo"; then
         local rustup_script
-        # Security: official Rust installer from rustup.rs (static.rust-lang.org); no version pinning (deferred)
         rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
         run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
         rm -f "$rustup_script"
         [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
     fi
-
-    if command -v rustup &>/dev/null; then
-        if ! rustup show active-toolchain &>/dev/null; then
-            run_optional "Configuring rustup default stable toolchain" rustup default stable
-            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
-        fi
-        if ! cargo --version &>/dev/null; then
-            run_optional "Repairing Rust toolchain via rustup default stable" rustup default stable
-            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
-        fi
+    if is_installed "rustup"; then
+        rustup show active-toolchain &>/dev/null || \
+            run_optional "Configuring rustup default stable" rustup default stable
+        is_installed "cargo" || run_optional "Repairing Rust toolchain" rustup default stable
+        [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
     fi
 }
 
+# ── Feature: 1Password CLI ────────────────────────────────────────────────────
 install_1password_cli() {
-    if command -v op &>/dev/null; then
-        ok "1Password CLI already installed"
-        return 0
-    fi
-
+    if is_installed "op"; then skip "1Password CLI already installed"; return 0; fi
     if [[ "$PKG_MGR" == "apt" ]]; then
-        run_optional "Installing 1Password apt prerequisites" bash -c "$SUDO apt-get install -y -qq curl gnupg ca-certificates"
-        run_optional "Creating 1Password keyring directory" bash -c "$SUDO install -d -m 0755 /usr/share/keyrings"
-
-        local key_ascii_tmp
-        local key_tmp
-        local old_umask
+        local key_asc key_gpg old_umask
         old_umask="$(umask)"
         umask 077
-        key_ascii_tmp="$(mktemp /tmp/1password-key-ascii-XXXXXX.asc)"
-        key_tmp="$(mktemp /tmp/1password-key-XXXXXX.gpg)"
+        key_asc="$(mktemp /tmp/1password-key-XXXXXX.asc)"
+        key_gpg="$(mktemp /tmp/1password-key-XXXXXX.gpg)"
         umask "$old_umask"
-        chmod 600 "$key_ascii_tmp" "$key_tmp"
-        run_optional "Downloading 1Password signing key" curl -fsSL "https://downloads.1password.com/linux/keys/1password.asc" -o "$key_ascii_tmp"
-        if [[ ! -s "$key_ascii_tmp" ]]; then
-            warn "1Password signing key download produced an empty file; skipping 1Password setup"
-            rm -f "$key_ascii_tmp" "$key_tmp"
-            return 0
+        chmod 600 "$key_asc" "$key_gpg"
+        if ! curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://downloads.1password.com/linux/keys/1password.asc" -o "$key_asc" \
+            || [[ ! -s "$key_asc" ]]; then
+            warn "1Password signing key download failed — skipping"
+            rm -f "$key_asc" "$key_gpg"; return 0
         fi
-        run_optional "Dearmoring 1Password signing key" bash -c "gpg --dearmor < '$key_ascii_tmp' > '$key_tmp'"
-        run_optional "Installing 1Password signing key to trusted keyrings" bash -c "$SUDO install -m 0644 '$key_tmp' /usr/share/keyrings/1password-archive-keyring.gpg"
-        rm -f "$key_ascii_tmp"
-        rm -f "$key_tmp"
-
-        local arch
-        arch="$(dpkg --print-architecture)"
-        run_optional "Writing 1Password apt repository entry" bash -c "echo 'deb [arch=${arch} signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/${arch} stable main' | $SUDO tee /etc/apt/sources.list.d/1password.list >/dev/null"
-        run_optional "Refreshing apt after adding 1Password repository" bash -c "$SUDO apt-get update -qq"
+        run_optional "Installing 1Password prerequisites" \
+            bash -c "$SUDO apt-get install -y -qq curl gnupg ca-certificates"
+        $SUDO install -d -m 0755 /usr/share/keyrings
+        gpg --dearmor < "$key_asc" | $SUDO install -m 0644 /dev/stdin \
+            /usr/share/keyrings/1password-archive-keyring.gpg
+        rm -f "$key_asc" "$key_gpg"
+        local arch; arch="$(dpkg --print-architecture)"
+        echo "deb [arch=${arch} signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] \
+https://downloads.1password.com/linux/debian/${arch} stable main" | \
+            $SUDO tee /etc/apt/sources.list.d/1password.list >/dev/null
+        run_optional "Refreshing apt after 1Password repo" bash -c "$SUDO apt-get update -qq"
         run_optional "Installing 1Password CLI" bash -c "$SUDO apt-get install -y 1password-cli"
     elif [[ "$PKG_MGR" == "pacman" ]]; then
-        run_optional "Installing 1Password CLI with pacman" bash -c "$SUDO pacman -S --noconfirm 1password-cli"
+        run_optional "Installing 1Password CLI (pacman)" \
+            bash -c "$SUDO pacman -S --noconfirm 1password-cli"
     fi
-
     mkdir -p "$HOME/.1password"
-    run_optional "Ensuring ~/.1password ownership" bash -c "$SUDO chown -R '$USER':'$USER' '$HOME/.1password'"
+    run_optional "Setting .1password ownership" \
+        bash -c "$SUDO chown -R '$USER':'$USER' '$HOME/.1password'"
 }
 
+# ── Feature: Homebrew + Gemini CLI ───────────────────────────────────────────
 install_homebrew_and_gemini() {
     local brew_bin=""
-    if command -v brew &>/dev/null; then
-        brew_bin="$(command -v brew)"
-        ok "Homebrew already installed"
+    if is_installed "brew"; then
+        brew_bin="$(command -v brew)"; skip "Homebrew already installed"
     else
-        if [[ "$PKG_MGR" == "apt" ]]; then
-            run_optional "Installing Homebrew build prerequisites (apt)" bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
-        fi
+        [[ "$PKG_MGR" == "apt" ]] && \
+            run_optional "Installing Homebrew build prerequisites" \
+                bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
         local brew_script
-        # Security: Homebrew installer fetched from GitHub raw HEAD; no version pinning (deferred)
-        brew_script="$(download_to_tmp "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "homebrew-install-XXXXXX.sh")"
+        brew_script="$(download_to_tmp \
+            "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" \
+            "homebrew-install-XXXXXX.sh")"
         run_optional "Installing Homebrew" env NONINTERACTIVE=1 /bin/bash "$brew_script"
         rm -f "$brew_script"
-
-        if [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
-            brew_bin="/home/linuxbrew/.linuxbrew/bin/brew"
-        elif [[ -x "$HOME/.linuxbrew/bin/brew" ]]; then
-            brew_bin="$HOME/.linuxbrew/bin/brew"
-        fi
+        [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]] && \
+            brew_bin="/home/linuxbrew/.linuxbrew/bin/brew" || true
+        [[ -z "$brew_bin" && -x "$HOME/.linuxbrew/bin/brew" ]] && \
+            brew_bin="$HOME/.linuxbrew/bin/brew" || true
     fi
-
-    if [[ -z "$brew_bin" ]] && command -v brew &>/dev/null; then
-        brew_bin="$(command -v brew)"
-    fi
-
+    [[ -z "$brew_bin" ]] && is_installed "brew" && brew_bin="$(command -v brew)"
     if [[ -n "$brew_bin" ]]; then
         eval "$("$brew_bin" shellenv)"
-        append_if_missing "$HOME/.zshrc" "command -v brew >/dev/null && eval \"\$(brew shellenv)\""
-        append_if_missing "$HOME/.bashrc" "command -v brew >/dev/null && eval \"\$(brew shellenv)\""
-
-        run_optional "Updating Homebrew taps" brew update
-        run_optional "Installing gcc with Homebrew" brew install gcc
-
-        if ! command -v gemini &>/dev/null; then
-            run_optional "Installing Gemini CLI with Homebrew" brew install gemini-cli
-            if ! command -v gemini &>/dev/null && command -v npm &>/dev/null; then
-                run_optional "Installing Gemini CLI with npm fallback" npm install -g @google/gemini-cli
-            fi
+        append_if_missing "$HOME/.zshrc" \
+            'command -v brew >/dev/null && eval "$(brew shellenv)"'
+        append_if_missing "$HOME/.bashrc" \
+            'command -v brew >/dev/null && eval "$(brew shellenv)"'
+        run_optional "Updating Homebrew" brew update
+        run_optional "Installing gcc via Homebrew" brew install gcc
+        if ! is_installed "gemini"; then
+            run_optional "Installing Gemini CLI (Homebrew)" brew install gemini-cli
+            ! is_installed "gemini" && is_installed "npm" && \
+                run_optional "Installing Gemini CLI (npm fallback)" \
+                    npm install -g @google/gemini-cli || true
         else
-            ok "Gemini CLI already installed"
+            skip "Gemini CLI already installed"
         fi
     else
-        warn "Homebrew not available; skipping Homebrew-based installs"
+        warn "Homebrew unavailable — skipping Homebrew-based installs"
     fi
 }
 
-install_github_deb() {
-    local repo="$1"
-    local pattern="$2"
-    local name="$3"
-    if command -v "$name" &>/dev/null; then
-        ok "$name verified"
-        return 0
-    fi
-    if [[ "$PKG_MGR" != "apt" ]]; then return 0; fi
-    info "Installing $name from GitHub releases..."
-    local url
-    local curl_args=(--proto '=https' --tlsv1.2 -fsSL)
-    if [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
-    fi
-    if command -v jq &>/dev/null; then
-        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | jq -r --arg p "$pattern" '.assets[]?.browser_download_url | select(test($p))' | head -1 || true)
+# ── Feature: sudo keepalive ───────────────────────────────────────────────────
+check_sudo() {
+    quip "Checking sudo access..."
+    if ! sudo -v 2>/dev/null; then die "sudo authentication failed"; fi
+    ok "sudo — cleared"
+    ( while true; do sudo -n true; sleep 50; done ) &
+    SUDO_KEEPALIVE_PID=$!
+    trap 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null; true' EXIT
+}
+
+# ── Mission summary ───────────────────────────────────────────────────────────
+print_summary() {
+    banner "MISSION DEBRIEF"
+    if [[ ${#FAILED_TOOLS[@]} -eq 0 ]]; then
+        echo -e "${GREEN}${BOLD}  ALL SYSTEMS NOMINAL — zero casualties.${RESET}"
     else
-        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" | grep browser_download_url | grep -E "$pattern" | head -1 | cut -d '"' -f4 || true)
+        echo -e "${YELLOW}${BOLD}  MISSION COMPLETE WITH CASUALTIES:${RESET}"
+        for t in "${FAILED_TOOLS[@]}"; do echo -e "  ${RED}[✗]${RESET}  $t"; done
+        quip "Try: sudo apt-get update && sudo apt-get install --fix-missing <pkg>"
     fi
-    [[ -n "$url" ]] || { warn "No ${name} release artifact matched ${pattern}"; return 0; }
-    local tmpfile
-    tmpfile="$(mktemp /tmp/"$name"-XXXXXX.deb)"
-    # Security: GitHub release download; no SHA256 verification (deferred)
-    run_optional "Downloading ${name} release package" curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmpfile"
-    run_optional "Installing ${name} deb package" bash -c "$SUDO dpkg -i '$tmpfile'"
-    rm -f "$tmpfile"
+    echo
+    echo -e "${DIM}  [→] Log saved to: ${LOG_FILE}${RESET}"
+    _log "INFO" "Install complete. Failures: ${#FAILED_TOOLS[@]}"
 }
 
-# --- Flags ---
-MODE="${MODE:-batch}"
-INSTALL_SHELL=true
-INSTALL_PROJECTOR=true
-
+# ── Help text ─────────────────────────────────────────────────────────────────
 show_help() {
     echo "Usage: install_linux.sh [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --shell          Install shell environment only (zsh, starship, dotfiles)"
+    echo "  --shell          Install shell environment only (zsh, oh-my-zsh, dotfiles)"
     echo "  --projector      Install projector tools only (Rust, cargo tools, fonts)"
-    echo "  --interactive    Prompt before each major step instead of running unattended"
+    echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
-    echo "If no options are given, both shell and projector components are installed."
+    echo "Default: shows install menu (TTY) or full install (non-TTY)."
 }
+
+# ── Install menus ─────────────────────────────────────────────────────────────
+show_custom_menu() {
+    echo -e "\n${BOLD}${CYAN}[ CUSTOM — select tool groups ]${RESET}\n"
+    ask_yes_no "  Shell environment (Zsh, Oh My Zsh, plugins, configs)?" \
+        && INSTALL_SHELL=true || INSTALL_SHELL=false
+    ask_yes_no "  Core security & developer tools (nmap, ripgrep, fzf...)?" \
+        && DO_SECURITY=true || DO_SECURITY=false
+    ask_yes_no "  Projector stack (Rust, weathr, JetBrains font, config)?" \
+        && INSTALL_PROJECTOR=true || INSTALL_PROJECTOR=false
+    ask_yes_no "  Homebrew + Gemini CLI?" \
+        && DO_BREW=true || DO_BREW=false
+}
+
+show_menu() {
+    echo -e "\n${BOLD}${BLADE}  What would you like to install?${RESET}\n"
+    echo -e "  ${CYAN}[1]${RESET} Full install     — Shell environment + Terminal projector ${DIM}(recommended)${RESET}"
+    echo -e "  ${CYAN}[2]${RESET} Shell only       — Zsh, Oh My Zsh, plugins, aliases"
+    echo -e "  ${CYAN}[3]${RESET} Projector only   — Terminal animation suite (weather, bonsai, fastfetch)"
+    echo -e "  ${CYAN}[4]${RESET} Custom           — Choose individual tool groups"
+    echo
+    echo -en "${CYAN}  Choice [1-4]: ${RESET}"
+    read -r _choice
+    case "$_choice" in
+        1) INSTALL_SHELL=true;  INSTALL_PROJECTOR=true ;;
+        2) INSTALL_SHELL=true;  INSTALL_PROJECTOR=false ;;
+        3) INSTALL_SHELL=false; INSTALL_PROJECTOR=true ;;
+        4) show_custom_menu ;;
+        *) warn "Invalid choice — defaulting to full install"
+           INSTALL_SHELL=true; INSTALL_PROJECTOR=true ;;
+    esac
+}
+
+# ── Flag parsing ──────────────────────────────────────────────────────────────
+INSTALL_SHELL=true
+INSTALL_PROJECTOR=true
+EXPLICIT_FLAG=false
+MODE="${MODE:-batch}"
+DO_SECURITY=true
+DO_BREW=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --shell) INSTALL_PROJECTOR=false ;;
-        --projector) INSTALL_SHELL=false ;;
+        --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; EXPLICIT_FLAG=true ;;
+        --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; EXPLICIT_FLAG=true ;;
         --interactive) MODE=interactive ;;
-        --help) show_help; exit 0 ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+        --help)        show_help; exit 0 ;;
+        *) err "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
     shift
 done
 
-# --- OS Gate (Detect) ---
+# ── OS detection ──────────────────────────────────────────────────────────────
 if command -v apt-get &>/dev/null; then
     PKG_MGR="apt"
-    info "Detected Debian/Ubuntu-based system."
+    info "Detected Debian/Ubuntu-based system"
 elif command -v pacman &>/dev/null; then
     PKG_MGR="pacman"
-    info "Detected Arch/CachyOS-based system."
-    if command -v yay &>/dev/null; then
-        AUR_HELPER="yay"
-    elif command -v paru &>/dev/null; then
-        AUR_HELPER="paru"
-    else
-        AUR_HELPER=""
-    fi
+    info "Detected Arch/CachyOS-based system"
+    if command -v yay &>/dev/null; then AUR_HELPER="yay"
+    elif command -v paru &>/dev/null; then AUR_HELPER="paru"
+    else AUR_HELPER=""; fi
 else
-    die "Unsupported Linux distribution. No apt-get or pacman found."
+    die "Unsupported Linux distribution — no apt-get or pacman found"
 fi
 
 SUDO=""
 if [[ "$EUID" -ne 0 ]]; then
-    command -v sudo &>/dev/null || die "sudo is not installed and you are not root. Cannot proceed."
+    command -v sudo &>/dev/null || die "sudo not installed and not root"
     SUDO="sudo"
 fi
 
-# --- Mode Check + Interactive Questions ---
-DO_CORE=true
-DO_SHELL="$INSTALL_SHELL"
-DO_SECURITY=true
-DO_PROJECTOR="$INSTALL_PROJECTOR"
-
-if [[ "$MODE" == "interactive" ]]; then
-    ask_yes_no "Install/update core package manager prerequisites?" || DO_CORE=false
-    if [[ "$INSTALL_SHELL" == "true" ]]; then
-        ask_yes_no "Install shell experience (zsh/oh-my-zsh/plugins/config)?" || DO_SHELL=false
-    fi
-    ask_yes_no "Install security/developer tools (1Password, shared payload, Homebrew, Gemini CLI)?" || DO_SECURITY=false
-    if [[ "$INSTALL_PROJECTOR" == "true" ]]; then
-        ask_yes_no "Install projector stack (Rust/toolchain, weathr, fonts, projector config)?" || DO_PROJECTOR=false
-    fi
-fi
-
-# ── 1. CORE PREREQUISITES ────────────────────────────────────────────────────
-if [[ "$DO_CORE" == "true" ]]; then
-    if [[ "$PKG_MGR" == "apt" ]]; then
-        run_optional "Refreshing apt package list" bash -c "$SUDO apt-get update -qq"
-        run_optional "Installing core apt prerequisites" bash -c "$SUDO apt-get install -y -qq ca-certificates curl gnupg unzip fontconfig"
-    else
-        run_optional "Refreshing pacman package list" bash -c "$SUDO pacman -Sy --noconfirm"
-        run_optional "Installing core pacman prerequisites" bash -c "$SUDO pacman -S --noconfirm ca-certificates curl gnupg unzip fontconfig"
-    fi
-fi
-
-# ── 2. SHELL EXPERIENCE ──────────────────────────────────────────────────────
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo "amd64")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ "$DO_SHELL" == "true" ]]; then
-    info "Installing shell environment..."
-    if ! command -v zsh &>/dev/null; then
-        if [[ "$PKG_MGR" == "apt" ]]; then
-            run_optional "Installing zsh via apt" bash -c "$SUDO apt-get install -y zsh"
-        else
-            run_optional "Installing zsh via pacman" bash -c "$SUDO pacman -S --noconfirm zsh"
-        fi
+# ── ASCII banner ──────────────────────────────────────────────────────────────
+echo -e "${BOLD}${CYAN}"
+cat << 'BANNER'
+  ╔════════════════════════════════════╗
+  ║  ⌁  terminal-kniferoll            ║
+  ║     sharp tools. clean cuts.      ║
+  ╚════════════════════════════════════╝
+BANNER
+echo -e "${RESET}"
+quip "Log: $LOG_FILE"
+echo
+
+# ── Show menu or use defaults ─────────────────────────────────────────────────
+if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
+    show_menu
+fi
+
+# ── Resolve deployment flags ──────────────────────────────────────────────────
+DO_CORE=true
+DO_SHELL="$INSTALL_SHELL"
+DO_PROJECTOR="$INSTALL_PROJECTOR"
+
+# ── sudo keepalive (non-root only) ────────────────────────────────────────────
+[[ "$EUID" -ne 0 ]] && check_sudo
+
+# ────────────────────────────────────────────────────────────────────────────
+# 1. CORE PREREQUISITES
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_CORE" == "true" ]]; then
+    banner "CORE PREREQUISITES"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        run_optional "Refreshing apt package list" \
+            bash -c "$SUDO apt-get update -qq"
+        run_optional "Installing core prerequisites" \
+            bash -c "$SUDO apt-get install -y -qq ca-certificates curl gnupg unzip fontconfig"
+    else
+        run_optional "Refreshing pacman database" \
+            bash -c "$SUDO pacman -Sy --noconfirm"
+        run_optional "Installing core prerequisites" \
+            bash -c "$SUDO pacman -S --noconfirm ca-certificates curl gnupg unzip fontconfig"
     fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2. SHELL ENVIRONMENT
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_SHELL" == "true" ]]; then
+    banner "SHELL ENVIRONMENT"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        apt_install "zsh" "zsh" "Zsh shell"
+    else
+        is_installed "zsh" || \
+            run_optional "Installing zsh (pacman)" bash -c "$SUDO pacman -S --noconfirm zsh"
+    fi
+
+    run_optional "Setting default shell to zsh" \
+        bash -c "$SUDO chsh -s '$(command -v zsh)' '$USER'"
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        # Security: GitHub raw URL tracks master branch (not a pinned tag/commit); TLS enforced
-        omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
-        run_optional "Installing Oh My Zsh" sh "$omz_script" --unattended
+        omz_script="$(download_to_tmp \
+            "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
+            "ohmyzsh-install-XXXXXX.sh")"
+        RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh" bash "$omz_script" --unattended
         rm -f "$omz_script"
     else
-        ok "Oh My Zsh already installed"
-    fi
-
-    if command -v zsh &>/dev/null; then
-        run_optional "Setting default shell to zsh" bash -c "$SUDO chsh -s '$(command -v zsh)' '$USER'"
+        skip "Oh My Zsh already installed"
     fi
 
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     mkdir -p "$ZSH_CUSTOM/plugins"
-    [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || run_optional "Installing zsh-autosuggestions plugin" git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
-    [[ -d "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting" ]] || run_optional "Installing zsh-fast-syntax-highlighting plugin" git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting"
 
-    info "Deploying shell configurations..."
+    [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || \
+        run_optional "Installing zsh-autosuggestions plugin" \
+            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+                "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+
+    # fast-syntax-highlighting MUST be last plugin loaded
+    [[ -d "$ZSH_CUSTOM/plugins/fast-syntax-highlighting" ]] || \
+        run_optional "Installing fast-syntax-highlighting plugin" \
+            git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting \
+                "$ZSH_CUSTOM/plugins/fast-syntax-highlighting"
+
+    banner "DEPLOYING SHELL CONFIGS"
     mkdir -p "$HOME/.shell"
-    cp "$SCRIPT_DIR/shell/zshrc.zsh" "$HOME/.zshrc"
+    cp "$SCRIPT_DIR/shell/zshrc.zsh"   "$HOME/.zshrc"
     cp "$SCRIPT_DIR/shell/aliases.zsh" "$HOME/.shell/aliases.zsh"
     cp "$SCRIPT_DIR/shell/plugins.zsh" "$HOME/.shell/plugins.zsh"
+    ok "Shell configurations deployed"
 fi
 
-# ── 3. SECURITY/DEVELOPER TOOLS ──────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# 3. SECURITY / DEVELOPER TOOLS
+# ────────────────────────────────────────────────────────────────────────────
 if [[ "$DO_SECURITY" == "true" ]]; then
     install_1password_cli
-    install_homebrew_and_gemini
-
-    info "Installing shared tooling payload..."
+    [[ "${DO_BREW:-true}" == "true" ]] && install_homebrew_and_gemini
 
     if [[ "$PKG_MGR" == "apt" ]]; then
-        APT_PACKAGES=(
-            binutils btop exiftool fastfetch fzf git gnutls-bin golang gzip hexyl jq
-            libssl-dev lua5.4 lz4 m4 micro ncurses-bin ngrep nmap nodejs openssl pipx
-            python3 python3-pip python3-venv rclone ripgrep ruby rustup speedtest-cli
-            sqlite3 tcpdump tealdeer tmux unbound wireshark yara zsh-autosuggestions
-            cmatrix cbonsai zoxide starship
-        )
-        for pkg in "${APT_PACKAGES[@]}"; do
-            if dpkg -s "$pkg" &>/dev/null 2>&1; then
-                ok "$pkg verified"
-            else
-                run_optional "Installing $pkg" bash -c "$SUDO apt-get install -y -qq '$pkg'"
-            fi
-        done
+        apt_batch "SECURITY TOOLING" \
+            "nmap:nmap" "tcpdump:tcpdump" "ngrep:ngrep" \
+            "tshark:wireshark" "yara:yara" "unbound:unbound" \
+            "certtool:gnutls-bin" "hexyl:hexyl"
 
-        # Packages not in Debian 12 repos — install via dedicated methods
-        if ! command -v uv &>/dev/null; then
-            run_optional "Installing uv via pipx" pipx install uv
+        apt_batch "DEVELOPER UTILITIES" \
+            "jq:jq" "fzf:fzf" "rg:ripgrep" "micro:micro" \
+            "sqlite3:sqlite3" "lua5.4:lua5.4" "m4:m4" "lz4:lz4" \
+            "exiftool:libimage-exiftool-perl" "git:git" \
+            "curl:curl" "gzip:gzip" "tmux:tmux" "btop:btop"
+
+        apt_batch "BUILD AND CRYPTO" \
+            "openssl:openssl" "python3:python3" "pip3:python3-pip" \
+            "ruby:ruby" "binutils:binutils" "fc-cache:fontconfig" \
+            "ca-certificates:ca-certificates" "libssl-dev:libssl-dev" \
+            "node:nodejs" "go:golang"
+
+        apt_batch "PYTHON AND PACKAGE MANAGEMENT" \
+            "pipx:pipx" "python3:python3-venv"
+
+        apt_batch "SHELL EXTRAS" \
+            "rclone:rclone" "speedtest-cli:speedtest-cli" "unzip:unzip" \
+            "fastfetch:fastfetch" "zoxide:zoxide" "starship:starship" \
+            "cmatrix:cmatrix" "cbonsai:cbonsai"
+
+        # Tools requiring non-apt installation methods
+        if ! is_installed "uv"; then
+            uv_script="$(download_to_tmp "https://astral.sh/uv/install.sh" "uv-install-XXXXXX.sh")"
+            run_optional "Installing uv" bash "$uv_script"
+            rm -f "$uv_script"
         fi
-        if ! command -v nu &>/dev/null; then
-            if command -v cargo &>/dev/null; then
-                run_optional "Installing nushell via cargo" cargo install nu
-            else
-                warn "nushell not available (not in apt, no cargo); skipping"
-            fi
+        if ! is_installed "nu"; then
+            is_installed "cargo" && cargo_install "nu" "nu" "nushell" || \
+                warn "nushell not in apt and no cargo — skipping"
         fi
-        if ! command -v yazi &>/dev/null; then
-            if command -v cargo &>/dev/null; then
-                run_optional "Installing yazi via cargo" cargo install yazi-fm yazi-cli
-            else
-                warn "yazi not available (not in apt, no cargo); skipping"
-            fi
+        if ! is_installed "yazi"; then
+            is_installed "cargo" && cargo_install "yazi" "yazi-fm yazi-cli" "yazi" || \
+                warn "yazi not in apt and no cargo — skipping"
         fi
-        if ! command -v mise &>/dev/null; then
-            local mise_script
-            # Security risk (HIGH): custom domain mise.jdx.dev; no checksum; TLS 1.2+ enforced via download_to_tmp
+        if ! is_installed "mise"; then
             mise_script="$(download_to_tmp "https://mise.jdx.dev/install.sh" "mise-install-XXXXXX.sh")"
-            run_optional "Installing mise via install script" bash "$mise_script"
+            run_optional "Installing mise" bash "$mise_script"
             rm -f "$mise_script"
         fi
-        if ! command -v atuin &>/dev/null; then
-            local atuin_script
-            # Security risk (HIGH): custom domain setup.atuin.sh; no checksum; TLS 1.2+ enforced via download_to_tmp
+        if ! is_installed "atuin"; then
             atuin_script="$(download_to_tmp "https://setup.atuin.sh" "atuin-install-XXXXXX.sh")"
-            run_optional "Installing atuin via install script" bash "$atuin_script"
+            run_optional "Installing atuin" bash "$atuin_script"
             rm -f "$atuin_script"
         fi
     else
+        # Arch/CachyOS via pacman
         PACMAN_PACKAGES=(
             binutils btop exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
             lz4 m4 micro ncurses ngrep nmap nodejs python-pipx python python-pip rclone
@@ -411,60 +529,62 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             atuin zoxide starship
         )
         for pkg in "${PACMAN_PACKAGES[@]}"; do
-            if pacman -Qi "$pkg" &>/dev/null; then
-                ok "$pkg verified"
-            else
-                run_optional "Installing $pkg" bash -c "$SUDO pacman -S --noconfirm '$pkg'"
-            fi
+            pacman -Qi "$pkg" &>/dev/null && skip "$pkg" && continue
+            run_optional "Installing $pkg" bash -c "$SUDO pacman -S --noconfirm '$pkg'"
         done
-
-        if ! command -v cbonsai &>/dev/null && [[ -n "${AUR_HELPER:-}" ]]; then
-            run_optional "Installing cbonsai via ${AUR_HELPER}" "$AUR_HELPER" -S --noconfirm cbonsai
+        if ! is_installed "cbonsai" && [[ -n "${AUR_HELPER:-}" ]]; then
+            run_optional "Installing cbonsai (AUR)" "$AUR_HELPER" -S --noconfirm cbonsai
         fi
     fi
 
-    install_github_deb "lsd-rs/lsd" "lsd_.*_amd64\\.deb" "lsd"
-    install_github_deb "sharkdp/bat" "bat_[0-9].*_amd64\\.deb" "bat"
-
-    # sd was removed from aliases; no longer installed
-    if ! command -v wtfis &>/dev/null; then
-        run_optional "Installing wtfis with pipx" pipx install wtfis
-        run_optional "Ensuring pipx path configured" pipx ensurepath
-    fi
-    if ! command -v lolcat &>/dev/null; then
+    banner "GITHUB RELEASE INSTALLS"
+    install_github_deb "lsd" "lsd-rs/lsd"    "_${ARCH}\\.deb" "lsd"
+    install_github_deb "bat" "sharkdp/bat"   "_${ARCH}\\.deb" "bat"
+    cargo_install "sd"    "sd"               "sd (sed replacement)"
+    is_installed "wtfis" || {
+        run_optional "Installing wtfis via pipx" pipx install wtfis
+        run_optional "Configuring pipx path"     pipx ensurepath
+    }
+    is_installed "lolcat" || \
         run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
-    fi
 fi
 
-# ── 4. PROJECTOR STACK ────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────
+# 4. PROJECTOR STACK
+# ────────────────────────────────────────────────────────────────────────────
 if [[ "$DO_PROJECTOR" == "true" ]]; then
+    banner "PROJECTOR STACK"
     ensure_rust_toolchain
-
-    if command -v cargo &>/dev/null && ! command -v weathr &>/dev/null; then
-        run_optional "Installing weathr via cargo" cargo install weathr
-    fi
-    if command -v cargo &>/dev/null && ! command -v trip &>/dev/null; then
-        run_optional "Installing trippy via cargo" cargo install trippy
-    fi
+    cargo_install "weathr" "weathr"  "weathr (weather CLI)"
+    cargo_install "trip"   "trippy"  "trippy (network pulse)"
 
     FONT_DIR="$HOME/.local/share/fonts"
-    if ! fc-list | grep -qi "JetBrainsMono" &>/dev/null; then
-        info "Installing JetBrainsMono Nerd Font..."
+    if ! fc-list 2>/dev/null | grep -qi "JetBrainsMono"; then
+        banner "JETBRAINSMONO NERD FONT"
         mkdir -p "$FONT_DIR/JetBrainsMono"
-        TMP_ZIP="$(mktemp /tmp/font-XXXXXX.zip)"
-        # Security: pinned to v3.4.0 (avoids tracking 'latest'); SHA256 verification deferred
-    run_optional "Downloading JetBrainsMono Nerd Font" curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" -o "$TMP_ZIP"
-        run_optional "Extracting JetBrainsMono Nerd Font" unzip -q "$TMP_ZIP" -d "$FONT_DIR/JetBrainsMono"
+        font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+        run_optional "Downloading JetBrainsMono Nerd Font" \
+            curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" \
+                -o "$font_zip"
+        run_optional "Extracting font" unzip -q "$font_zip" -d "$FONT_DIR/JetBrainsMono"
         run_optional "Refreshing font cache" fc-cache -f
-        rm -f "$TMP_ZIP"
+        rm -f "$font_zip"
     else
-        ok "JetBrainsMono Nerd Font already installed"
+        skip "JetBrainsMono Nerd Font already installed"
     fi
 
-    info "Deploying Projector configuration..."
+    banner "PROJECTOR CONFIGURATION"
     mkdir -p "$HOME/.config/projector"
-    [[ -f "$HOME/.config/projector/config.json" ]] || cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
-    [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py"
+    [[ -f "$HOME/.config/projector/config.json" ]] || \
+        cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
+    [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py" || true
+    ok "Projector configuration deployed"
 fi
 
-ok "Installation Complete!"
+# ────────────────────────────────────────────────────────────────────────────
+# SUMMARY
+# ────────────────────────────────────────────────────────────────────────────
+print_summary
+echo -e "${BOLD}${CYAN}>>> mission complete. knives sharp. out.${RESET}"
+echo -e "${DIM}    Reminder: run 'chsh -s \$(which zsh)' to set Zsh as default shell.${RESET}"
+echo -e "${DIM}    Reminder: source ~/.cargo/env or restart your shell for Rust tools.${RESET}"

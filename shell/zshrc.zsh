@@ -24,11 +24,10 @@ ZSH_THEME_RANDOM_CANDIDATES=(
 
 source "$ZSH/oh-my-zsh.sh"
 
-# --- CUSTOM PLUGINS (Homebrew or Manual) ---
-if [[ -d "/home/linuxbrew/.linuxbrew/opt/zsh-fast-syntax-highlighting" ]]; then
-    source /home/linuxbrew/.linuxbrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
-    source /home/linuxbrew/.linuxbrew/opt/zsh-fast-syntax-highlighting/share/zsh-fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh
-fi
+# --- CUSTOM PLUGINS (macOS brew, loaded after OMZ) ---
+# Handled in ~/.shell/plugins.zsh via OSTYPE guard.
+# On Linux, OMZ loads zsh-autosuggestions and fast-syntax-highlighting
+# from $ZSH_CUSTOM/plugins/ (git-cloned by installer).
 
 # FZF
 if command -v fzf &>/dev/null; then
