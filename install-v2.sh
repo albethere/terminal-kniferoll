@@ -129,8 +129,9 @@ github_deb_install() {
     quip "Hailing GitHub API... stand by."
 
     local download_url
+    # Security: GitHub API; enforce TLS 1.2+; no SHA256 verification of downloaded .deb (deferred)
     download_url=$(
-        curl -fsSL "https://api.github.com/repos/${gh_repo}/releases/latest" \
+        curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/${gh_repo}/releases/latest" \
         | grep "browser_download_url" \
         | grep "${asset_pattern}" \
         | grep -v "musl" \
@@ -141,7 +142,7 @@ github_deb_install() {
     if [[ -z "$download_url" ]]; then
         quip "Native .deb not found. Attempting musl fallback (fingers crossed)..."
         download_url=$(
-            curl -fsSL "https://api.github.com/repos/${gh_repo}/releases/latest" \
+            curl --proto '=https' --tlsv1.2 -fsSL "https://api.github.com/repos/${gh_repo}/releases/latest" \
             | grep "browser_download_url" \
             | grep "${asset_pattern}" \
             | head -1 \
@@ -158,7 +159,7 @@ github_deb_install() {
     local tmp_deb
     tmp_deb=$(mktemp /tmp/${tool_name}-XXXXXX.deb)
     quip "Downloading: ${download_url}"
-    if curl -fsSL -o "$tmp_deb" "$download_url"; then
+    if curl --proto '=https' --tlsv1.2 -fsSL -o "$tmp_deb" "$download_url"; then
         if sudo dpkg -i "$tmp_deb"; then
             ok "${tool_name} installed from GitHub release."
         else

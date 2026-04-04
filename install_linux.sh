@@ -6,23 +6,40 @@
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# --- Colors ---
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-RESET='\033[0m'
+# ── TTY-guarded color palette ─────────────────────────────────────────────────
+if [ -t 1 ]; then
+  RED='\033[0;31m';   GREEN='\033[0;32m';  YELLOW='\033[1;33m'
+  CYAN='\033[0;36m';  BOLD='\033[1m';      DIM='\033[2m';       RESET='\033[0m'
+  ORANGE='\033[38;5;208m'; STEEL='\033[38;5;249m'
+  HERB='\033[38;5;106m';   BLADE='\033[38;5;255m'
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
+  ORANGE=''; STEEL=''; HERB=''; BLADE=''
+fi
 
-ok()   { echo -e "${GREEN}[✔] ${1}${RESET}"; }
-info() { echo -e "${CYAN}[*] ${1}${RESET}"; }
-warn() { echo -e "${YELLOW}[!] ${1}${RESET}"; }
-die()  { echo -e "${RED}[✘] FATAL: ${1}${RESET}" >&2; exit 1; }
+# ── Log file ──────────────────────────────────────────────────────────────────
+LOG_FILE="$HOME/.terminal-kniferoll/logs/install_$(date +%Y%m%d_%H%M%S).log"
+mkdir -p "$(dirname "$LOG_FILE")"
 
-on_error() {
-    local line="$1"
-    local cmd="$2"
-    warn "Unexpected failure at line ${line}: ${cmd}"
+_log() {
+  local level="$1" msg="$2"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $msg" >> "$LOG_FILE"
 }
+
+# ── Logging helpers ───────────────────────────────────────────────────────────
+ok()     { echo -e "${GREEN}[✓]${RESET} ${HERB}$*${RESET}";   _log "OK"    "$*"; }
+info()   { echo -e "${CYAN}[→]${RESET} $*";                   _log "INFO"  "$*"; }
+warn()   { echo -e "${ORANGE}[~]${RESET} $*";                 _log "WARN"  "$*"; }
+skip()   { echo -e "${DIM}[~] skip: $*${RESET}";              _log "SKIP"  "$*"; }
+err()    { echo -e "${RED}[✗]${RESET} $*";                    _log "ERROR" "$*"; }
+die()    { echo -e "${RED}[✗] FATAL: $*${RESET}" >&2;         _log "ERROR" "FATAL: $*"; exit 1; }
+banner() { echo -e "\n${BOLD}${CYAN}[ $* ]${RESET}";          _log "INFO"  "=== $* ==="; }
+quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
+
+# ── Failed tools tracker ──────────────────────────────────────────────────────
+FAILED_TOOLS=()
+
+on_error() { warn "Unexpected failure at line $1: $2"; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
 run_optional() {
@@ -47,7 +64,8 @@ download_to_tmp() {
     tmp_file="$(mktemp "/tmp/${pattern}")"
     umask "$old_umask"
     chmod 600 "$tmp_file"
-    curl -fsSL "$url" -o "$tmp_file"
+    # Security: enforce HTTPS and TLS 1.2+ on all install-script fetches
+    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp_file"
     echo "$tmp_file"
 }
 
@@ -73,6 +91,7 @@ ask_yes_no() {
 ensure_rust_toolchain() {
     if ! command -v cargo &>/dev/null; then
         local rustup_script
+        # Security: official Rust installer from rustup.rs (static.rust-lang.org); no version pinning (deferred)
         rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
         run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
         rm -f "$rustup_script"
@@ -144,6 +163,7 @@ install_homebrew_and_gemini() {
             run_optional "Installing Homebrew build prerequisites (apt)" bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
         fi
         local brew_script
+        # Security: Homebrew installer fetched from GitHub raw HEAD; no version pinning (deferred)
         brew_script="$(download_to_tmp "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "homebrew-install-XXXXXX.sh")"
         run_optional "Installing Homebrew" env NONINTERACTIVE=1 /bin/bash "$brew_script"
         rm -f "$brew_script"
@@ -191,7 +211,7 @@ install_github_deb() {
     if [[ "$PKG_MGR" != "apt" ]]; then return 0; fi
     info "Installing $name from GitHub releases..."
     local url
-    local curl_args=(-fsSL)
+    local curl_args=(--proto '=https' --tlsv1.2 -fsSL)
     if [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
         curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
     fi
@@ -203,7 +223,8 @@ install_github_deb() {
     [[ -n "$url" ]] || { warn "No ${name} release artifact matched ${pattern}"; return 0; }
     local tmpfile
     tmpfile="$(mktemp /tmp/"$name"-XXXXXX.deb)"
-    run_optional "Downloading ${name} release package" curl -fsSL "$url" -o "$tmpfile"
+    # Security: GitHub release download; no SHA256 verification (deferred)
+    run_optional "Downloading ${name} release package" curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmpfile"
     run_optional "Installing ${name} deb package" bash -c "$SUDO dpkg -i '$tmpfile'"
     rm -f "$tmpfile"
 }
@@ -302,6 +323,7 @@ if [[ "$DO_SHELL" == "true" ]]; then
     fi
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+        # Security: GitHub raw URL tracks master branch (not a pinned tag/commit); TLS enforced
         omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
         run_optional "Installing Oh My Zsh" sh "$omz_script" --unattended
         rm -f "$omz_script"
@@ -368,12 +390,14 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         fi
         if ! command -v mise &>/dev/null; then
             local mise_script
+            # Security risk (HIGH): custom domain mise.jdx.dev; no checksum; TLS 1.2+ enforced via download_to_tmp
             mise_script="$(download_to_tmp "https://mise.jdx.dev/install.sh" "mise-install-XXXXXX.sh")"
             run_optional "Installing mise via install script" bash "$mise_script"
             rm -f "$mise_script"
         fi
         if ! command -v atuin &>/dev/null; then
             local atuin_script
+            # Security risk (HIGH): custom domain setup.atuin.sh; no checksum; TLS 1.2+ enforced via download_to_tmp
             atuin_script="$(download_to_tmp "https://setup.atuin.sh" "atuin-install-XXXXXX.sh")"
             run_optional "Installing atuin via install script" bash "$atuin_script"
             rm -f "$atuin_script"
@@ -402,15 +426,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     install_github_deb "lsd-rs/lsd" "lsd_.*_amd64\\.deb" "lsd"
     install_github_deb "sharkdp/bat" "bat_[0-9].*_amd64\\.deb" "bat"
 
-    # sd ships as .tar.gz, not .deb — install via cargo as fallback
-    if ! command -v sd &>/dev/null; then
-        if command -v cargo &>/dev/null; then
-            run_optional "Installing sd via cargo" cargo install sd
-        else
-            warn "sd not available (no .deb, no cargo); skipping"
-        fi
-    fi
-
+    # sd was removed from aliases; no longer installed
     if ! command -v wtfis &>/dev/null; then
         run_optional "Installing wtfis with pipx" pipx install wtfis
         run_optional "Ensuring pipx path configured" pipx ensurepath
@@ -436,7 +452,8 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         info "Installing JetBrainsMono Nerd Font..."
         mkdir -p "$FONT_DIR/JetBrainsMono"
         TMP_ZIP="$(mktemp /tmp/font-XXXXXX.zip)"
-        run_optional "Downloading JetBrainsMono Nerd Font" curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" -o "$TMP_ZIP"
+        # Security: pinned to v3.4.0 (avoids tracking 'latest'); SHA256 verification deferred
+    run_optional "Downloading JetBrainsMono Nerd Font" curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" -o "$TMP_ZIP"
         run_optional "Extracting JetBrainsMono Nerd Font" unzip -q "$TMP_ZIP" -d "$FONT_DIR/JetBrainsMono"
         run_optional "Refreshing font cache" fc-cache -f
         rm -f "$TMP_ZIP"

@@ -47,7 +47,8 @@ download_to_tmp() {
     tmp_file="$(mktemp "/tmp/${pattern}")"
     umask "$old_umask"
     chmod 600 "$tmp_file"
-    curl -fsSL "$url" -o "$tmp_file"
+    # Security: enforce HTTPS and TLS 1.2+ on all install-script fetches
+    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp_file"
     echo "$tmp_file"
 }
 
@@ -85,6 +86,7 @@ show_help() {
 ensure_rust_toolchain() {
     if ! command -v cargo &>/dev/null; then
         local rustup_script
+        # Security: official Rust installer from rustup.rs; no version pinning (deferred)
         rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
         run_optional "Installing Rust via rustup" bash "$rustup_script" -y --quiet
         rm -f "$rustup_script"
@@ -121,6 +123,7 @@ done
 
 # --- Homebrew Check ---
 if ! command -v brew &>/dev/null; then
+    # Security: Homebrew installer from GitHub raw HEAD; no version pinning (deferred)
     brew_script="$(download_to_tmp "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "homebrew-install-XXXXXX.sh")"
     run_optional "Installing Homebrew" env NONINTERACTIVE=1 /bin/bash "$brew_script"
     rm -f "$brew_script"
@@ -167,7 +170,8 @@ if [[ "$DO_SHELL" == "true" ]]; then
     info "Installing shell environment..."
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
+        # Security: GitHub raw URL tracks master branch (not a pinned tag/commit); TLS enforced
+    omz_script="$(download_to_tmp "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" "ohmyzsh-install-XXXXXX.sh")"
         run_optional "Installing Oh My Zsh" sh "$omz_script" --unattended
         rm -f "$omz_script"
     else
@@ -213,7 +217,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         fastfetch fontconfig freetype fzf gcc gh git gnutls go gzip
         harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro mise ncurses ngrep
         nmap node nushell openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby
-        rustup sd speedtest-cli sqlite starship tcpdump tealdeer tmux unbound uv
+        rustup speedtest-cli sqlite starship tcpdump tealdeer tmux unbound uv
         wireshark yazi yara zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
     )
     for pkg in "${BREW_PACKAGES[@]}"; do
@@ -259,7 +263,8 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         mkdir -p "$FONT_DIR"
         TMP_ZIP="$(mktemp /tmp/font-XXXXXX.zip)"
         TMP_EXTRACT="$(mktemp -d /tmp/font-extract-XXXXXX)"
-        run_optional "Downloading JetBrainsMono Nerd Font" curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" -o "$TMP_ZIP"
+        # Security: pinned to v3.4.0 (avoids tracking 'latest'); SHA256 verification deferred
+        run_optional "Downloading JetBrainsMono Nerd Font" curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" -o "$TMP_ZIP"
         run_optional "Extracting JetBrainsMono Nerd Font" unzip -q "$TMP_ZIP" -d "$TMP_EXTRACT"
         run_optional "Copying JetBrainsMono font files" find "$TMP_EXTRACT" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
         rm -rf "$TMP_ZIP" "$TMP_EXTRACT"
