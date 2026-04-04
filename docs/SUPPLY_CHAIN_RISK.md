@@ -3,7 +3,7 @@ Generated: 2026-04-04
 
 ## Summary
 
-The installer suite (install_linux.sh, install_mac.sh, install-v2.sh, install_windows.ps1) pulls from
+The installer suite (install_linux.sh, install_mac.sh, install_windows.ps1) pulls from
 a mix of official package managers, GitHub releases, and custom-domain install scripts. The overall
 posture is **MEDIUM** risk. No high-risk unverified custom-domain scripts are executed without TLS
 enforcement; however several download-then-run patterns lack checksum verification, and multiple
@@ -74,7 +74,6 @@ install scripts track floating `HEAD`/`master`/`latest` rather than pinned versi
 1. **TLS hardening** — added `--proto '=https' --tlsv1.2` to all `curl` invocations in:
    - `install_linux.sh`: `download_to_tmp()`, `install_github_deb()`, font download
    - `install_mac.sh`: `download_to_tmp()`, font download
-   - `install-v2.sh`: `github_deb_install()` (both GitHub API calls and .deb download)
 
 2. **Font version pinning** — JetBrainsMono Nerd Font URL changed from `releases/latest` to `releases/download/v3.4.0/` in install_linux.sh and install_mac.sh.
 
