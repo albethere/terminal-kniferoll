@@ -4,7 +4,7 @@
 # Standardized environment bootstrapper (Shell + Projector)
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 # --- ANSI Colors ---
 C_ORANGE="\033[38;5;214m"

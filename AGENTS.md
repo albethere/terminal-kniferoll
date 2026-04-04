@@ -60,15 +60,12 @@ On interactive TTY, the installer prompts:
 | `install_windows.ps1` | Windows projector (full stack via WSL) |
 | `shell/zshrc.zsh` | Zsh config template |
 | `projector.py` | Terminal animation orchestrator |
-| `docs/SESSION_LOG.md` | Implementation plan, architecture, delegation prompts |
-| `AIDSOCL_KNIFEROLL_DIRECTIVE.md` | Agentic dual-mode bootstrap directive |
-| `TUNING_DIRECTIVE.md` | UX/performance optimization targets |
+| `docs/ARCHITECTURE.md` | Design overview, phases, integration contract |
+| `docs/FLAVOR.md` | Voice & tone guide for installer output |
 
 ---
 
 ## 🤖 Resuming the Mission
 
-1. **Read** `docs/SESSION_LOG.md` before any cross-repo or multi-step task.
-2. **Check** `AIDSOCL_KNIFEROLL_DIRECTIVE.md` for the dual-mode (Interactive/Passive) bootstrap spec.
-3. **Check** `TUNING_DIRECTIVE.md` for pending UX/performance optimizations.
-4. If operating within the full AIDSOCL ecosystem, defer to `lcars-core/AGENTS.md` for fleet-level orchestration.
+1. **Read** `docs/ARCHITECTURE.md` for a full walkthrough before cross-repo or multi-step tasks.
+2. If operating within the full AIDSOCL ecosystem, defer to `lcars-core/AGENTS.md` for fleet-level orchestration.

@@ -367,10 +367,16 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             fi
         fi
         if ! command -v mise &>/dev/null; then
-            run_optional "Installing mise via install script" bash -c 'curl -fsSL https://mise.jdx.dev/install.sh | sh'
+            local mise_script
+            mise_script="$(download_to_tmp "https://mise.jdx.dev/install.sh" "mise-install-XXXXXX.sh")"
+            run_optional "Installing mise via install script" bash "$mise_script"
+            rm -f "$mise_script"
         fi
         if ! command -v atuin &>/dev/null; then
-            run_optional "Installing atuin via install script" bash -c 'curl -fsSL https://setup.atuin.sh | sh'
+            local atuin_script
+            atuin_script="$(download_to_tmp "https://setup.atuin.sh" "atuin-install-XXXXXX.sh")"
+            run_optional "Installing atuin via install script" bash "$atuin_script"
+            rm -f "$atuin_script"
         fi
     else
         PACMAN_PACKAGES=(

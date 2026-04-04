@@ -138,6 +138,9 @@ def clear_screen():
     sys.stdout.flush()
 
 def interaction_handler(executor, scenes):
+    if os.name != 'posix':
+        return
+
     import termios
     import tty
 
@@ -175,7 +178,8 @@ def main():
     scenes = load_config(config_path)
     
     executor = SceneExecutor()
-    threading.Thread(target=interaction_handler, args=(executor, scenes), daemon=True).start()
+    if os.name == 'posix':
+        threading.Thread(target=interaction_handler, args=(executor, scenes), daemon=True).start()
 
     clear_screen()
     print("\033[1;35m================================================================\033[0m")

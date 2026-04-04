@@ -15,9 +15,13 @@ fi
 
 if command -v bat &>/dev/null; then alias cat='bat'; fi
 if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then alias cat='batcat'; fi
-if command -v sd &>/dev/null; then alias sed='sd'; fi
+if command -v sd &>/dev/null; then alias subs='sd'; fi
 
 # Shell management
 alias snzrc='sudo nano ~/.zshrc'
 alias szrc='source ~/.zshrc'
-alias ff='fastfetch --pipe | lolcat'
+if command -v fastfetch &>/dev/null && command -v lolcat &>/dev/null; then
+    alias ff='fastfetch --pipe | lolcat'
+elif command -v fastfetch &>/dev/null; then
+    alias ff='fastfetch'
+fi

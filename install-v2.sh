@@ -210,12 +210,27 @@ install_rust() {
     fi
 
     quip "Engaging rustup installer. This takes a moment — replicate some coffee."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; then
-        # shellcheck disable=SC1091
-        source "$HOME/.cargo/env"
-        ok "Rust installed: $(rustc --version)"
+    local rustup_script
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    rustup_script="$(mktemp "/tmp/rustup-init-XXXXXX.sh")"
+    umask "$old_umask"
+    chmod 600 "$rustup_script"
+    if curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$rustup_script"; then
+        if bash "$rustup_script" -y --no-modify-path; then
+            rm -f "$rustup_script"
+            # shellcheck disable=SC1091
+            [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+            ok "Rust installed: $(rustc --version)"
+        else
+            rm -f "$rustup_script"
+            warn "rustup installation failed. Cargo-dependent tools will be unavailable."
+            FAILED_TOOLS+=("rust/cargo")
+        fi
     else
-        warn "rustup installation failed. Cargo-dependent tools will be unavailable."
+        rm -f "$rustup_script"
+        warn "rustup download failed. Cargo-dependent tools will be unavailable."
         FAILED_TOOLS+=("rust/cargo")
     fi
 }
@@ -228,12 +243,25 @@ install_uv() {
     fi
     info "Installing uv (Python package manager)..."
     quip "uv is not in standard repos. Fetching from astral.sh..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-        ok "uv installed successfully."
+    local uv_script
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    uv_script="$(mktemp "/tmp/uv-install-XXXXXX.sh")"
+    umask "$old_umask"
+    chmod 600 "$uv_script"
+    if curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/install.sh -o "$uv_script"; then
+        if bash "$uv_script"; then
+            ok "uv installed successfully."
+        else
+            warn "uv installation failed."
+            FAILED_TOOLS+=("uv")
+        fi
     else
-        warn "uv installation failed."
+        warn "uv download failed."
         FAILED_TOOLS+=("uv")
     fi
+    rm -f "$uv_script"
 }
 
 # ─── Install Oh My Zsh ────────────────────────────────────────
@@ -244,8 +272,21 @@ install_omz() {
     fi
     info "Installing Oh My Zsh..."
     quip "This will not change your default shell mid-script."
-    RUNZSH=no CHSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-    ok "Oh My Zsh installed."
+    local omz_script
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    omz_script="$(mktemp "/tmp/ohmyzsh-install-XXXXXX.sh")"
+    umask "$old_umask"
+    chmod 600 "$omz_script"
+    if curl --proto '=https' --tlsv1.2 -fsSL "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" -o "$omz_script"; then
+        RUNZSH=no CHSH=no bash "$omz_script" --unattended
+        ok "Oh My Zsh installed."
+    else
+        warn "Oh My Zsh download failed."
+        FAILED_TOOLS+=("oh-my-zsh")
+    fi
+    rm -f "$omz_script"
 }
 
 # ─── Add 1Password apt repository ────────────────────────────
@@ -255,8 +296,27 @@ add_1password_repo() {
         return 0
     fi
     info "Adding 1Password repository..."
-    curl -sS https://downloads.1password.com/linux/keys/1password.asc \
-      | sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+    local key_tmp
+    local old_umask
+    old_umask="$(umask)"
+    umask 077
+    key_tmp="$(mktemp /tmp/1password-key-XXXXXX.asc)"
+    umask "$old_umask"
+    chmod 600 "$key_tmp"
+    if ! curl --proto '=https' --tlsv1.2 -fsSL https://downloads.1password.com/linux/keys/1password.asc -o "$key_tmp"; then
+        warn "Failed to download 1Password signing key. Skipping 1Password repo."
+        rm -f "$key_tmp"
+        FAILED_TOOLS+=("1password-repo")
+        return 1
+    fi
+    if [[ ! -s "$key_tmp" ]]; then
+        warn "1Password signing key is empty. Skipping 1Password repo."
+        rm -f "$key_tmp"
+        FAILED_TOOLS+=("1password-repo")
+        return 1
+    fi
+    gpg --dearmor < "$key_tmp" | sudo install -m 0644 /dev/stdin /usr/share/keyrings/1password-archive-keyring.gpg
+    rm -f "$key_tmp"
     echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/${ARCH} stable main" \
       | sudo tee /etc/apt/sources.list.d/1password.list > /dev/null
     sudo apt-get update -q
@@ -280,6 +340,38 @@ print_summary() {
     fi
     echo
 }
+
+# ═══════════════════════════════════════════════════════════════
+#  ARGUMENT PARSING
+# ═══════════════════════════════════════════════════════════════
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_SHELL=true
+INSTALL_PROJECTOR=true
+MODE="batch"
+
+show_help() {
+    echo "Usage: install-v2.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --shell          Install shell environment only (zsh, oh-my-zsh, dotfiles)"
+    echo "  --projector      Install projector tools only (Rust, cargo tools, fonts, config)"
+    echo "  --interactive    Prompt before each major step instead of running unattended"
+    echo "  --help           Show this help message and exit"
+    echo ""
+    echo "If no options are given, both shell and projector components are installed."
+}
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --shell)       INSTALL_PROJECTOR=false ;;
+        --projector)   INSTALL_SHELL=false ;;
+        --interactive) MODE=interactive ;;
+        --help)        show_help; exit 0 ;;
+        *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
+    esac
+    shift
+done
 
 # ═══════════════════════════════════════════════════════════════
 #  MAIN DEPLOYMENT SEQUENCE
@@ -316,10 +408,38 @@ banner "Adding Third-Party Repositories"
 add_1password_repo
 
 # ─── Step 3: Shell Environment ───────────────────────────────
-banner "Shell Environment — Zsh + Oh My Zsh"
-apt_install "zsh" "zsh" "Zsh shell"
-apt_install "zsh-autosuggestions" "zsh-autosuggestions" "zsh-autosuggestions"
-install_omz
+if [[ "$INSTALL_SHELL" == "true" ]]; then
+    banner "Shell Environment — Zsh + Oh My Zsh"
+    apt_install "zsh" "zsh" "Zsh shell"
+    apt_install "zsh-autosuggestions" "zsh-autosuggestions" "zsh-autosuggestions"
+    install_omz
+
+    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+    mkdir -p "$ZSH_CUSTOM/plugins"
+    if [[ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]]; then
+        info "Cloning zsh-autosuggestions plugin..."
+        git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+            "$ZSH_CUSTOM/plugins/zsh-autosuggestions" && ok "zsh-autosuggestions cloned." \
+            || { warn "zsh-autosuggestions clone failed."; FAILED_TOOLS+=("zsh-autosuggestions"); }
+    else
+        ok "zsh-autosuggestions plugin already present."
+    fi
+    if [[ ! -d "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting" ]]; then
+        info "Cloning zsh-fast-syntax-highlighting plugin..."
+        git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting \
+            "$ZSH_CUSTOM/plugins/zsh-fast-syntax-highlighting" && ok "zsh-fast-syntax-highlighting cloned." \
+            || { warn "zsh-fast-syntax-highlighting clone failed."; FAILED_TOOLS+=("zsh-fast-syntax-highlighting"); }
+    else
+        ok "zsh-fast-syntax-highlighting plugin already present."
+    fi
+
+    banner "Deploying Shell Configurations"
+    mkdir -p "$HOME/.shell"
+    cp "$SCRIPT_DIR/shell/zshrc.zsh"   "$HOME/.zshrc"
+    cp "$SCRIPT_DIR/shell/aliases.zsh"  "$HOME/.shell/aliases.zsh"
+    cp "$SCRIPT_DIR/shell/plugins.zsh"  "$HOME/.shell/plugins.zsh"
+    ok "Shell configurations deployed."
+fi
 
 # ─── Step 4: Core Security & Network Tools ───────────────────
 apt_batch "Core Security Tooling" \
@@ -391,16 +511,30 @@ apt_install "node" "nodejs" "Node.js"
 banner "Fastfetch — System Info Display"
 apt_install "fastfetch" "fastfetch" "fastfetch"
 
-# ─── Step 13: Rust + Cargo + cargo tools ─────────────────────
-install_rust
-cargo_install "weathr" "weathr" "weathr (weather CLI)"
-cargo_install "trip" "trippy" "trippy (network pulse)"
-cargo_install "tldr" "tealdeer" "tealdeer (tldr pages)"
+# ─── Step 13: Rust + Cargo + cargo tools + Projector Config ──
+if [[ "$INSTALL_PROJECTOR" == "true" ]]; then
+    install_rust
+    cargo_install "weathr" "weathr" "weathr (weather CLI)"
+    cargo_install "trip" "trippy" "trippy (network pulse)"
+    cargo_install "tldr" "tealdeer" "tealdeer (tldr pages)"
 
-# ─── Step 14: GitHub release installs (arch-safe) ────────────
-banner "GitHub Release Installs — lsd & bat"
-github_deb_install "lsd" "lsd-rs/lsd" "_${ARCH}.deb" "lsd"
-github_deb_install "bat" "sharkdp/bat" "_${ARCH}.deb" "bat"
+    # ─── Step 14: GitHub release installs (arch-safe) ────────────
+    banner "GitHub Release Installs — lsd & bat"
+    github_deb_install "lsd" "lsd-rs/lsd" "_${ARCH}.deb" "lsd"
+    github_deb_install "bat" "sharkdp/bat" "_${ARCH}.deb" "bat"
+
+    banner "Deploying Projector Configuration"
+    mkdir -p "$HOME/.config/projector"
+    if [[ ! -f "$HOME/.config/projector/config.json" ]]; then
+        cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
+        ok "Projector config deployed."
+    else
+        ok "Projector config already exists — skipping."
+    fi
+    [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py"
+else
+    quip "Projector stack skipped (--shell mode)."
+fi
 
 # ─── Step 15: 1Password CLI ──────────────────────────────────
 banner "1Password CLI"

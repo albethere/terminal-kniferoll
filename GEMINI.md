@@ -3,7 +3,7 @@
 # GEMINI.md: Terminal-Kniferoll Protocol
 
 > **Directive**: Standardized Environment Configuration & Projector Hub
-> **Role**: This repository combines the security-focused Zsh environment (zsh-kniferoll) with the animated terminal projector (terminal-projector).
+> **Role**: This repository is the unified successor to `zsh-kniferoll` and `terminal-projector` (both now deleted historical predecessors). It combines the security-focused Zsh environment with the animated terminal projector.
 
 ## 🚀 Core Objectives
 1. **Utility**: Deploy a production-ready, security-hardened Zsh environment on any OS (Linux, macOS, WSL).

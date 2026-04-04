@@ -22,7 +22,7 @@ ZSH_THEME_RANDOM_CANDIDATES=(
 # Load Plugins Configuration
 [[ -f "$HOME/.shell/plugins.zsh" ]] && source "$HOME/.shell/plugins.zsh"
 
-source $ZSH/oh-my-zsh.sh
+source "$ZSH/oh-my-zsh.sh"
 
 # --- CUSTOM PLUGINS (Homebrew or Manual) ---
 if [[ -d "/home/linuxbrew/.linuxbrew/opt/zsh-fast-syntax-highlighting" ]]; then
@@ -62,13 +62,13 @@ if [[ -n "$ZSC_PEM" ]]; then
 fi
 
 # --- WTFIS API KEYS ---
-export VT_API_KEY="${PRIVATE_VT_API_KEY:-redacted}"
-export PT_API_KEY="${PRIVATE_PT_API_KEY:-redacted}"
-export PT_API_USER="${PRIVATE_PT_API_USER:-redactedd}"
-export IP2WHOIS_API_KEY="${PRIVATE_IP2WHOIS_API_KEY:-redacted}"
-export SHODAN_API_KEY="${PRIVATE_SHODAN_API_KEY:-redacted}"
-export GREYNOISE_API_KEY="${PRIVATE_GREYNOISE_API_KEY:-redacted}"
-export ABUSEIPDB_API_KEY="${PRIVATE_ABUSEIPDB_API_KEY:-redacted}"
+export VT_API_KEY="${PRIVATE_VT_API_KEY:-}"
+export PT_API_KEY="${PRIVATE_PT_API_KEY:-}"
+export PT_API_USER="${PRIVATE_PT_API_USER:-}"
+export IP2WHOIS_API_KEY="${PRIVATE_IP2WHOIS_API_KEY:-}"
+export SHODAN_API_KEY="${PRIVATE_SHODAN_API_KEY:-}"
+export GREYNOISE_API_KEY="${PRIVATE_GREYNOISE_API_KEY:-}"
+export ABUSEIPDB_API_KEY="${PRIVATE_ABUSEIPDB_API_KEY:-}"
 
 # Load Aliases
 [[ -f "$HOME/.shell/aliases.zsh" ]] && source "$HOME/.shell/aliases.zsh"
