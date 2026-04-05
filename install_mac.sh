@@ -379,24 +379,36 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
     is_installed "weathr" || run_optional "Installing weathr via cargo" cargo install weathr
     is_installed "trip"   || run_optional "Installing trippy via cargo" cargo install trippy
 
-    # JetBrainsMono Nerd Font (macOS uses ~/Library/Fonts)
+    # ── Nerd Fonts (macOS uses ~/Library/Fonts) ───────────────────────────────
     FONT_DIR="$HOME/Library/Fonts"
-    if ! find "$FONT_DIR" -maxdepth 1 -iname "*JetBrainsMono*" -print -quit 2>/dev/null | grep -q .; then
-        banner "JETBRAINSMONO NERD FONT"
-        mkdir -p "$FONT_DIR"
-        font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
-        font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
-        # Pinned to v3.4.0 — update version here when upgrading
-        run_optional "Downloading JetBrainsMono Nerd Font" \
-            curl --proto '=https' --tlsv1.2 -fsSL \
-                "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" \
-                -o "$font_zip"
-        run_optional "Extracting font" unzip -q "$font_zip" -d "$font_extract"
-        run_optional "Copying font files" find "$font_extract" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
-        rm -rf "$font_zip" "$font_extract"
-    else
-        skip "JetBrainsMono Nerd Font already installed"
-    fi
+    NERD_FONTS=(
+        Iosevka Hack UbuntuMono JetBrainsMono 3270
+        FiraCode CascadiaCode VictorMono Mononoki
+        SpaceMono SourceCodePro Meslo GeistMono
+    )
+    # Pinned release — update NERD_FONTS_VER here to upgrade all fonts at once
+    NERD_FONTS_VER="v3.4.0"
+    banner "NERD FONTS"
+    mkdir -p "$FONT_DIR"
+    for _nf in "${NERD_FONTS[@]}"; do
+        if find "$FONT_DIR" -maxdepth 1 -iname "*${_nf}*" -print -quit 2>/dev/null | grep -q .; then
+            skip "$_nf Nerd Font already installed"
+            continue
+        fi
+        _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+        _font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
+        if curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
+                -o "$_font_zip"; then
+            unzip -qo "$_font_zip" -d "$_font_extract"
+            find "$_font_extract" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
+            ok "$_nf Nerd Font installed"
+        else
+            warn "$_nf Nerd Font download failed"
+            FAILED_TOOLS+=("font:$_nf")
+        fi
+        rm -rf "$_font_zip" "$_font_extract"
+    done
 
     banner "PROJECTOR CONFIGURATION"
     mkdir -p "$HOME/.config/projector"

@@ -324,13 +324,22 @@ function Install-ShellExperience {
     Install-Scoop   'lsd'                        'lsd'       'lsd'
     Install-Scoop   'btop'                       'btop'      'btop'
 
-    # ── Nerd Font (CascadiaCode NF via Oh My Posh) ──
+    # ── Nerd Fonts ──
+    $NerdFonts = @(
+        'Iosevka', 'Hack', 'UbuntuMono', 'JetBrainsMono', '3270',
+        'FiraCode', 'CascadiaCode', 'VictorMono', 'Mononoki',
+        'SpaceMono', 'SourceCodePro', 'Meslo', 'GeistMono'
+    )
     if (Test-Cmd oh-my-posh) {
-        Invoke-Optional "Installing CascadiaCode Nerd Font via Oh My Posh" {
-            oh-my-posh font install CascadiaCode 2>&1 | Out-Null
+        foreach ($nf in $NerdFonts) {
+            Invoke-Optional "Installing $nf Nerd Font" {
+                oh-my-posh font install $nf 2>&1 | Out-Null
+            }
         }
     } elseif (Test-Cmd scoop) {
-        Install-Scoop 'CascadiaCode-NF' 'CascadiaCode Nerd Font'
+        foreach ($nf in $NerdFonts) {
+            Install-Scoop "${nf}-NF" "$nf Nerd Font"
+        }
     }
 
     # ── PowerShell Modules ──
@@ -356,6 +365,9 @@ function Install-ShellExperience {
 
     # ── Deploy PowerShell Profile ──
     Deploy-PSProfile
+
+    # ── Deploy Windows Terminal Settings ──
+    Deploy-WTSettings
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -513,6 +525,53 @@ if (Get-Command fastfetch -ErrorAction SilentlyContinue) {
         Write-OK "PowerShell profile deployed → $PROFILE"
     } catch {
         Write-Warn "Could not write profile: $($_.Exception.Message)"
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WINDOWS TERMINAL SETTINGS DEPLOYMENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Deploy-WTSettings {
+    Write-Section "Windows Terminal Settings"
+
+    $scriptDir = Split-Path $MyInvocation.PSCommandPath -Parent
+    $sourceSettings = Join-Path $scriptDir 'windows\settings.json'
+
+    if (-not (Test-Path $sourceSettings)) {
+        Write-Warn "windows\settings.json not found in repo — skipping WT deployment"
+        return
+    }
+
+    # Locate Windows Terminal LocalState directory
+    $wtPaths = @(
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState",
+        "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe\LocalState"
+    )
+    $wtDir = $null
+    foreach ($p in $wtPaths) {
+        if (Test-Path $p) { $wtDir = $p; break }
+    }
+
+    if (-not $wtDir) {
+        Write-Warn "Windows Terminal LocalState directory not found — is Windows Terminal installed?"
+        return
+    }
+
+    $targetSettings = Join-Path $wtDir 'settings.json'
+
+    # Back up existing settings
+    if (Test-Path $targetSettings) {
+        $backup = "$targetSettings.bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Copy-Item $targetSettings $backup -Force
+        Write-Info "Existing WT settings backed up → $backup"
+    }
+
+    try {
+        Copy-Item $sourceSettings $targetSettings -Force
+        Write-OK "Windows Terminal settings deployed (Cyberwave color scheme)"
+    } catch {
+        Write-Warn "Could not deploy WT settings: $($_.Exception.Message)"
     }
 }
 

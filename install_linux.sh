@@ -635,21 +635,39 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
     cargo_install "weathr" "weathr"  "weathr (weather CLI)"
     cargo_install "trip"   "trippy"  "trippy (network pulse)"
 
+    # ── Nerd Fonts ────────────────────────────────────────────────────────────
     FONT_DIR="$HOME/.local/share/fonts"
-    if ! fc-list 2>/dev/null | grep -qi "JetBrainsMono"; then
-        banner "JETBRAINSMONO NERD FONT"
-        mkdir -p "$FONT_DIR/JetBrainsMono"
-        font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
-        # Pinned to v3.4.0 — update version here when upgrading
-        run_optional "Downloading JetBrainsMono Nerd Font" \
-            curl --proto '=https' --tlsv1.2 -fsSL \
-                "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" \
-                -o "$font_zip"
-        run_optional "Extracting font" unzip -q "$font_zip" -d "$FONT_DIR/JetBrainsMono"
+    NERD_FONTS=(
+        Iosevka Hack UbuntuMono JetBrainsMono 3270
+        FiraCode CascadiaCode VictorMono Mononoki
+        SpaceMono SourceCodePro Meslo GeistMono
+    )
+    # Pinned release — update NERD_FONTS_VER here to upgrade all fonts at once
+    NERD_FONTS_VER="v3.4.0"
+    _fonts_installed=0
+    banner "NERD FONTS"
+    mkdir -p "$FONT_DIR"
+    for _nf in "${NERD_FONTS[@]}"; do
+        if fc-list 2>/dev/null | grep -qi "$_nf"; then
+            skip "$_nf Nerd Font already installed"
+            continue
+        fi
+        _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+        if curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
+                -o "$_font_zip"; then
+            mkdir -p "$FONT_DIR/$_nf"
+            unzip -qo "$_font_zip" -d "$FONT_DIR/$_nf"
+            ok "$_nf Nerd Font installed"
+            (( _fonts_installed++ ))
+        else
+            warn "$_nf Nerd Font download failed"
+            FAILED_TOOLS+=("font:$_nf")
+        fi
+        rm -f "$_font_zip"
+    done
+    if [[ $_fonts_installed -gt 0 ]]; then
         run_optional "Refreshing font cache" fc-cache -f
-        rm -f "$font_zip"
-    else
-        skip "JetBrainsMono Nerd Font already installed"
     fi
 
     banner "PROJECTOR CONFIGURATION"
