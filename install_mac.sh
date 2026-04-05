@@ -2,6 +2,11 @@
 # =============================================================================
 # terminal-kniferoll | macOS Installer (Shell + Projector)
 # =============================================================================
+#
+# Supply chain controls: lib/supply_chain_guard.sh is sourced below.
+# Set SC_RISK_TOLERANCE=1..4 in environment to bypass the interactive prompt.
+# Set SC_ALLOW_RISKY=1 to match pre-guard (permissive) behavior in automation.
+# =============================================================================
 
 set -Eeuo pipefail
 export HOMEBREW_NO_AUTO_UPDATE=1
@@ -80,6 +85,38 @@ ask_yes_no() {
 
 # ── Helper: check if binary is on PATH ───────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
+
+# ── Cleanup: tools explicitly removed from this project ──────────────────────
+cleanup_removed_tools() {
+    local did_work=false
+
+    # ── atuin — removed 2026-04-05: supply chain risk
+    if is_installed "atuin" || brew list atuin &>/dev/null 2>&1; then
+        did_work=true
+        warn "atuin found — evicting (cut: supply chain risk)"
+        brew list atuin &>/dev/null 2>&1 && \
+            run_optional "Removing atuin (brew)" brew uninstall atuin || true
+        [[ -d "$HOME/.atuin" ]] && \
+            run_optional "Removing ~/.atuin data dir" rm -rf "$HOME/.atuin"
+        [[ -f "$HOME/.zshrc" ]] && \
+            sed -i '' '/command -v atuin.*atuin init zsh/d' "$HOME/.zshrc" 2>/dev/null || true
+        ok "atuin — evicted"
+    fi
+
+    # ── mise — removed 2026-04-05: supply chain risk
+    if is_installed "mise" || brew list mise &>/dev/null 2>&1; then
+        did_work=true
+        warn "mise found — evicting (cut: supply chain risk)"
+        brew list mise &>/dev/null 2>&1 && \
+            run_optional "Removing mise (brew)" brew uninstall mise || true
+        [[ -d "$HOME/.local/share/mise" ]] && \
+            run_optional "Removing ~/.local/share/mise data dir" \
+                rm -rf "$HOME/.local/share/mise"
+        ok "mise — evicted"
+    fi
+
+    "$did_work" || skip "No removed tools found — clean slate"
+}
 
 # ── Feature: ensure Rust toolchain ───────────────────────────────────────────
 ensure_rust_toolchain() {
@@ -176,6 +213,10 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── Supply chain guard ────────────────────────────────────────────────────────
+# shellcheck source=lib/supply_chain_guard.sh
+source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
+
 # ── ASCII banner ──────────────────────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}"
 cat << 'BANNER'
@@ -218,6 +259,13 @@ fi
 # ── Resolve deployment flags ──────────────────────────────────────────────────
 DO_SHELL="$INSTALL_SHELL"
 DO_PROJECTOR="$INSTALL_PROJECTOR"
+
+# ── Supply chain risk policy (interactive TTY only; no-op in batch/CI) ────────
+sc_set_risk_tolerance
+
+# ── Evict tools removed from this project ─────────────────────────────────────
+banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
+cleanup_removed_tools
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1. CORE PREREQUISITES
@@ -287,12 +335,13 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     mkdir -p "$HOME/.1password"
 
     banner "SECURITY AND DEVELOPER TOOLS"
+    # atuin and mise removed 2026-04-05 — supply chain risk (see docs/SUPPLY_CHAIN_RISK.md)
     BREW_PACKAGES=(
-        atuin bat binutils btop ca-certificates cbonsai cmatrix exiftool
+        bat binutils btop ca-certificates cbonsai cmatrix exiftool
         fastfetch fontconfig freetype fzf gcc gh git gnutls go gzip
-        harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro mise ncurses ngrep
+        harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses ngrep
         nmap node nushell openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby
-        rustup sd speedtest-cli sqlite starship tcpdump tealdeer tmux unbound uv
+        rustup speedtest-cli sqlite starship tcpdump tealdeer tmux unbound uv
         wireshark yazi yara zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
     )
     for pkg in "${BREW_PACKAGES[@]}"; do
@@ -337,8 +386,10 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         mkdir -p "$FONT_DIR"
         font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
         font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
+        # Pinned to v3.4.0 — update version here when upgrading
         run_optional "Downloading JetBrainsMono Nerd Font" \
-            curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" \
+            curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" \
                 -o "$font_zip"
         run_optional "Extracting font" unzip -q "$font_zip" -d "$font_extract"
         run_optional "Copying font files" find "$font_extract" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
@@ -358,6 +409,8 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
+sc_process_deferred
 print_summary
+sc_summary
 echo -e "${BOLD}${CYAN}>>> mission complete. knives sharp. out.${RESET}"
 echo -e "${DIM}    Reminder: restart your shell or run 'source ~/.zshrc' to activate.${RESET}"

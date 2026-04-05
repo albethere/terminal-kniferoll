@@ -1,21 +1,58 @@
 # Supply Chain Risk Analysis — terminal-kniferoll
-Generated: 2026-04-04
+Updated: 2026-04-05
 
 ## Summary
 
 The installer suite (install_linux.sh, install_mac.sh, install_windows.ps1) pulls from
 a mix of official package managers, GitHub releases, and custom-domain install scripts. The overall
-posture is **MEDIUM** risk. No high-risk unverified custom-domain scripts are executed without TLS
-enforcement; however several download-then-run patterns lack checksum verification, and multiple
-install scripts track floating `HEAD`/`master`/`latest` rather than pinned versions.
+posture is **LOW-MEDIUM** risk following the addition of `lib/supply_chain_guard.sh` and the
+removal of automatic execution of HIGH-risk custom-domain scripts without user consent.
 
-**Key findings:**
-- Two custom-domain install scripts (mise, atuin) use `curl | bash`-equivalent patterns with no checksums — mitigated by enforcing TLS 1.2+, deferred for checksum addition
+**Key findings and current mitigations:**
+- Three custom-domain curl|bash scripts (mise, atuin, uv) are now gated behind `sc_install()` —
+  users choose their risk policy at install start or per-package in Manual mode
+- `sd` fully removed from install_linux.sh and install_mac.sh BREW_PACKAGES (was orphaned)
+- JetBrainsMono Nerd Font pinned to v3.4.0 in both Linux and macOS scripts; TLS flags added
 - Oh My Zsh and Homebrew install scripts are fetched from GitHub `master`/`HEAD` — no commit pinning
-- `sd` was removed from aliases but still installed on Linux/macOS — removed in this sweep
-- JetBrainsMono Nerd Font was downloaded from `releases/latest` — pinned to v3.4.0 in this sweep
-- GitHub release .deb downloads (lsd, bat) lack SHA256 verification
+- GitHub release .deb downloads (lsd, bat) lack SHA256 verification — deferred
 - cargo installs (weathr, trippy, etc.) rely on crates.io registry integrity with no version pinning
+
+## Supply Chain Guard (`lib/supply_chain_guard.sh`)
+
+Added in 2026-04-05 sweep. All HIGH-risk installs on Linux now flow through `sc_install()`.
+
+### Risk Policy Options
+
+Set via interactive prompt at install start, or pre-set via environment:
+
+| Policy | `SC_RISK_TOLERANCE` | Behavior |
+|--------|---------------------|----------|
+| Strict | `1` | Only package managers (apt/brew/cargo). All curl\|bash scripts skipped. |
+| Balanced | `2` | Safe methods for HIGH risk; original methods for MEDIUM/LOW. **(default in non-TTY/CI)** |
+| Permissive | `3` | All original methods used. Equivalent to pre-guard behavior. (`SC_ALLOW_RISKY=1`) |
+| Manual | `4` | Prompt individually for every risky package. |
+
+Non-interactive (batch/CI) defaults to `SC_RISK_TOLERANCE=1` (Strict) unless overridden.
+
+### Per-Package Options (Manual mode / [4])
+
+For each HIGH-risk package, the user can choose:
+1. **Safe install** — package manager or `cargo install` (no custom-domain scripts)
+2. **Original method** — the upstream curl|bash script (TLS 1.2+ enforced)
+3. **Skip** — bypass and install manually later
+4. **Defer** — queue for review at end of install session
+5. **Inspect / OSINT** — shows GitHub URL, source URL, live SHA256 hash of the script,
+   TLS cert check command, and optionally opens the script in `less` for review
+
+### Environment Variables
+
+```bash
+SC_RISK_TOLERANCE=1   # Strict (CI-safe default when no TTY)
+SC_RISK_TOLERANCE=2   # Balanced
+SC_RISK_TOLERANCE=3   # Permissive
+SC_RISK_TOLERANCE=4   # Manual (prompt per package)
+SC_ALLOW_RISKY=1      # Shorthand for SC_RISK_TOLERANCE=3
+```
 
 ---
 
@@ -71,15 +108,27 @@ install scripts track floating `HEAD`/`master`/`latest` rather than pinned versi
 
 ## Mitigations Implemented
 
-1. **TLS hardening** — added `--proto '=https' --tlsv1.2` to all `curl` invocations in:
+### 2026-04-05 sweep
+
+1. **Supply chain guard** — `lib/supply_chain_guard.sh` added. All three HIGH-risk packages
+   (mise, atuin, uv) on Linux are now routed through `sc_install()` with safe alternatives
+   and interactive user controls. macOS gets the guard framework (mise/atuin/uv come from
+   Homebrew there, which is already lower risk).
+
+2. **`sd` fully removed** — `cargo_install "sd"` removed from `install_linux.sh`; `sd` removed
+   from `BREW_PACKAGES` in `install_mac.sh`. (Was orphaned — no remaining aliases.)
+
+3. **Font URL hardened** — `install_linux.sh` and `install_mac.sh` font download now uses
+   pinned `v3.4.0` URL and adds `--proto '=https' --tlsv1.2` curl flags.
+
+### 2026-04-04 sweep
+
+4. **TLS hardening** — added `--proto '=https' --tlsv1.2` to all `curl` invocations in:
    - `install_linux.sh`: `download_to_tmp()`, `install_github_deb()`, font download
    - `install_mac.sh`: `download_to_tmp()`, font download
 
-2. **Font version pinning** — JetBrainsMono Nerd Font URL changed from `releases/latest` to `releases/download/v3.4.0/` in install_linux.sh and install_mac.sh.
-
-3. **`sd` removed** — the `sd` (sed alternative) tool was already removed from aliases but was still being installed via `cargo install sd` (install_linux.sh) and in BREW_PACKAGES (install_mac.sh). Removed from both.
-
-4. **Security comments** — added inline comments to all high-risk fetch points (mise, atuin, rustup, Oh My Zsh, Homebrew) explaining the risk and applied mitigations.
+5. **Security comments** — added inline comments to all high-risk fetch points (mise, atuin,
+   rustup, Oh My Zsh, Homebrew) explaining the risk and applied mitigations.
 
 ---
 

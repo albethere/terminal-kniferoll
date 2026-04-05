@@ -2,6 +2,11 @@
 # =============================================================================
 # terminal-kniferoll | Linux Installer (Shell + Projector)
 # =============================================================================
+#
+# Supply chain controls: lib/supply_chain_guard.sh is sourced below.
+# Set SC_RISK_TOLERANCE=1..4 in environment to bypass the interactive prompt.
+# Set SC_ALLOW_RISKY=1 to match pre-guard (permissive) behavior in automation.
+# =============================================================================
 
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -260,6 +265,63 @@ install_homebrew_and_gemini() {
     fi
 }
 
+# ── Cleanup: tools explicitly removed from this project ──────────────────────
+# Run on every install to evict previously-installed tools we've cut.
+# All checks are guarded — safe on fresh machines.
+cleanup_removed_tools() {
+    local did_work=false
+
+    # ── atuin — removed 2026-04-05: HIGH supply chain risk (custom-domain curl|bash),
+    #   no value-add over built-in zsh history on a hardened deployment.
+    if is_installed "atuin" || [[ -f "$HOME/.cargo/bin/atuin" ]] || \
+       [[ -d "$HOME/.atuin" ]]; then
+        did_work=true
+        warn "atuin found — evicting (cut: supply chain risk)"
+        if is_installed "cargo" && \
+           cargo install --list 2>/dev/null | grep -q "^atuin "; then
+            run_optional "Removing atuin (cargo uninstall)" cargo uninstall atuin
+        fi
+        rm -f "$HOME/.cargo/bin/atuin" 2>/dev/null || true
+        [[ -d "$HOME/.atuin" ]] && \
+            run_optional "Removing ~/.atuin data dir" rm -rf "$HOME/.atuin"
+        # Scrub atuin init from deployed zshrc
+        if [[ -f "$HOME/.zshrc" ]]; then
+            sed -i '/command -v atuin.*atuin init zsh/d' "$HOME/.zshrc" 2>/dev/null || true
+            ok "atuin init removed from ~/.zshrc"
+        fi
+        if [[ "$PKG_MGR" == "pacman" ]]; then
+            pacman -Qi atuin &>/dev/null 2>&1 && \
+                run_optional "Removing atuin (pacman)" \
+                    bash -c "$SUDO pacman -R --noconfirm atuin" || true
+        fi
+        ok "atuin — evicted"
+    fi
+
+    # ── mise — removed 2026-04-05: HIGH supply chain risk (custom-domain curl|bash)
+    #   on apt systems; no safe binary channel. Use native pyenv/nvm/system packages.
+    if is_installed "mise" || [[ -f "$HOME/.local/bin/mise" ]] || \
+       [[ -f "$HOME/.cargo/bin/mise" ]]; then
+        did_work=true
+        warn "mise found — evicting (cut: supply chain risk)"
+        if is_installed "cargo" && \
+           cargo install --list 2>/dev/null | grep -q "^mise "; then
+            run_optional "Removing mise (cargo uninstall)" cargo uninstall mise
+        fi
+        rm -f "$HOME/.local/bin/mise" "$HOME/.cargo/bin/mise" 2>/dev/null || true
+        [[ -d "$HOME/.local/share/mise" ]] && \
+            run_optional "Removing ~/.local/share/mise data dir" \
+                rm -rf "$HOME/.local/share/mise"
+        if [[ "$PKG_MGR" == "pacman" ]]; then
+            pacman -Qi mise &>/dev/null 2>&1 && \
+                run_optional "Removing mise (pacman)" \
+                    bash -c "$SUDO pacman -R --noconfirm mise" || true
+        fi
+        ok "mise — evicted"
+    fi
+
+    "$did_work" || skip "No removed tools found — clean slate"
+}
+
 # ── Feature: sudo keepalive ───────────────────────────────────────────────────
 check_sudo() {
     quip "Checking sudo access..."
@@ -372,6 +434,10 @@ fi
 ARCH="$(dpkg --print-architecture 2>/dev/null || echo "amd64")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── Supply chain guard ────────────────────────────────────────────────────────
+# shellcheck source=lib/supply_chain_guard.sh
+source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
+
 # ── ASCII banner ──────────────────────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}"
 cat << 'BANNER'
@@ -394,8 +460,15 @@ DO_CORE=true
 DO_SHELL="$INSTALL_SHELL"
 DO_PROJECTOR="$INSTALL_PROJECTOR"
 
+# ── Supply chain risk policy (interactive TTY only; no-op in batch/CI) ────────
+sc_set_risk_tolerance
+
 # ── sudo keepalive (non-root only) ────────────────────────────────────────────
 [[ "$EUID" -ne 0 ]] && check_sudo
+
+# ── Evict tools removed from this project ─────────────────────────────────────
+banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
+cleanup_removed_tools
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1. CORE PREREQUISITES
@@ -462,6 +535,20 @@ if [[ "$DO_SHELL" == "true" ]]; then
     ok "Shell configurations deployed"
 fi
 
+# ── uv: safe install only (no custom-domain script) ──────────────────────────
+# astral.sh/uv/install.sh was HIGH risk — removed. uv is available via pipx
+# on apt systems and natively in pacman. The risky curl|bash path is gone.
+_install_uv_safe() {
+    if [[ "$PKG_MGR" == "pacman" ]]; then
+        is_installed "uv" && { skip "uv already installed"; return 0; }
+        run_optional "Installing uv (pacman)" bash -c "$SUDO pacman -S --noconfirm uv"
+    else
+        is_installed "uv" && { skip "uv already installed"; return 0; }
+        run_optional "Installing uv via pipx" pipx install uv
+        run_optional "Configuring pipx path" pipx ensurepath
+    fi
+}
+
 # ────────────────────────────────────────────────────────────────────────────
 # 3. SECURITY / DEVELOPER TOOLS
 # ────────────────────────────────────────────────────────────────────────────
@@ -496,11 +583,9 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             "cmatrix:cmatrix" "cbonsai:cbonsai"
 
         # Tools requiring non-apt installation methods
-        if ! is_installed "uv"; then
-            uv_script="$(download_to_tmp "https://astral.sh/uv/install.sh" "uv-install-XXXXXX.sh")"
-            run_optional "Installing uv" bash "$uv_script"
-            rm -f "$uv_script"
-        fi
+        # uv — safe install only (astral.sh custom-domain script removed)
+        _install_uv_safe
+
         if ! is_installed "nu"; then
             is_installed "cargo" && cargo_install "nu" "nu" "nushell" || \
                 warn "nushell not in apt and no cargo — skipping"
@@ -509,24 +594,17 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             is_installed "cargo" && cargo_install "yazi" "yazi-fm yazi-cli" "yazi" || \
                 warn "yazi not in apt and no cargo — skipping"
         fi
-        if ! is_installed "mise"; then
-            mise_script="$(download_to_tmp "https://mise.jdx.dev/install.sh" "mise-install-XXXXXX.sh")"
-            run_optional "Installing mise" bash "$mise_script"
-            rm -f "$mise_script"
-        fi
-        if ! is_installed "atuin"; then
-            atuin_script="$(download_to_tmp "https://setup.atuin.sh" "atuin-install-XXXXXX.sh")"
-            run_optional "Installing atuin" bash "$atuin_script"
-            rm -f "$atuin_script"
-        fi
+        # mise and atuin are not installed — removed 2026-04-05 (supply chain risk)
+        # Use native pyenv/nvm for runtime version management; zsh built-in history for atuin
     else
         # Arch/CachyOS via pacman
         PACMAN_PACKAGES=(
             binutils btop exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
             lz4 m4 micro ncurses ngrep nmap nodejs python-pipx python python-pip rclone
             ripgrep ruby rustup speedtest-cli sqlite tcpdump tealdeer tmux unbound uv
-            wireshark-cli yara zsh-autosuggestions cmatrix nushell yazi mise
-            atuin zoxide starship
+            wireshark-cli yara zsh-autosuggestions cmatrix nushell yazi
+            zoxide starship
+            # mise and atuin removed 2026-04-05 — supply chain risk
         )
         for pkg in "${PACMAN_PACKAGES[@]}"; do
             pacman -Qi "$pkg" &>/dev/null && skip "$pkg" && continue
@@ -540,7 +618,6 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     banner "GITHUB RELEASE INSTALLS"
     install_github_deb "lsd" "lsd-rs/lsd"    "_${ARCH}\\.deb" "lsd"
     install_github_deb "bat" "sharkdp/bat"   "_${ARCH}\\.deb" "bat"
-    cargo_install "sd"    "sd"               "sd (sed replacement)"
     is_installed "wtfis" || {
         run_optional "Installing wtfis via pipx" pipx install wtfis
         run_optional "Configuring pipx path"     pipx ensurepath
@@ -563,8 +640,10 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         banner "JETBRAINSMONO NERD FONT"
         mkdir -p "$FONT_DIR/JetBrainsMono"
         font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+        # Pinned to v3.4.0 — update version here when upgrading
         run_optional "Downloading JetBrainsMono Nerd Font" \
-            curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip" \
+            curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" \
                 -o "$font_zip"
         run_optional "Extracting font" unzip -q "$font_zip" -d "$FONT_DIR/JetBrainsMono"
         run_optional "Refreshing font cache" fc-cache -f
@@ -584,7 +663,9 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
+sc_process_deferred
 print_summary
+sc_summary
 echo -e "${BOLD}${CYAN}>>> mission complete. knives sharp. out.${RESET}"
 echo -e "${DIM}    Reminder: run 'chsh -s \$(which zsh)' to set Zsh as default shell.${RESET}"
 echo -e "${DIM}    Reminder: source ~/.cargo/env or restart your shell for Rust tools.${RESET}"

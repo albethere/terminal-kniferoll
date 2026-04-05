@@ -77,7 +77,6 @@ export ABUSEIPDB_API_KEY="${PRIVATE_ABUSEIPDB_API_KEY:-}"
 
 # Wrapped evals
 command -v zoxide &>/dev/null && eval "$(zoxide init zsh --cmd cd)"
-command -v atuin &>/dev/null && eval "$(atuin init zsh)"
 
 # Welcome message
 if command -v fastfetch &>/dev/null; then
