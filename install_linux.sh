@@ -577,11 +577,24 @@ if [[ "$DO_SHELL" == "true" ]]; then
         bash -c "$SUDO chsh -s '$(command -v zsh)' '$USER'"
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        omz_script="$(download_to_tmp \
-            "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
-            "ohmyzsh-install-XXXXXX.sh")"
-        RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh" bash "$omz_script" --unattended
-        rm -f "$omz_script"
+        # Pinned to a specific release tag instead of piping master/install.sh.
+        # Update OMZ_TAG when upgrading. Tags: https://github.com/ohmyzsh/ohmyzsh/tags
+        local OMZ_TAG="24.9.0"
+        info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
+        if ! git clone --depth 1 --branch "$OMZ_TAG" \
+                https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
+            # Tag may not exist yet — fall back to unattended script install with a warning
+            warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
+            local omz_script
+            omz_script="$(download_to_tmp \
+                "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
+                "ohmyzsh-install-XXXXXX.sh")"
+            RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh (unpinned)" \
+                bash "$omz_script" --unattended
+            rm -f "$omz_script"
+        else
+            ok "Oh My Zsh cloned at ${OMZ_TAG}"
+        fi
     else
         skip "Oh My Zsh already installed"
     fi
