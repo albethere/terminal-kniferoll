@@ -340,6 +340,19 @@ if [[ "$DO_SHELL" == "true" ]]; then
     grep -q "aliases_mac.zsh" "$HOME/.zshrc" || \
         echo '[[ -f "$HOME/.shell/aliases_mac.zsh" ]] && source "$HOME/.shell/aliases_mac.zsh"' \
             >> "$HOME/.zshrc"
+
+    # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.).
+    # .zprofile covers login shells; .zshrc covers interactive non-login shells opened by GUIs.
+    # Both get the brew shellenv line so PATH is set regardless of how the shell is launched.
+    if [[ -d /opt/homebrew/bin ]]; then
+        local _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
+        append_if_missing "$HOME/.zprofile" "$_brew_path_line"
+        append_if_missing "$HOME/.zshrc"    "$_brew_path_line"
+        [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && \
+            export PATH="/opt/homebrew/bin:$PATH" && \
+            ok "/opt/homebrew/bin added to current session PATH"
+        ok "Homebrew PATH ensured in ~/.zprofile and ~/.zshrc"
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
