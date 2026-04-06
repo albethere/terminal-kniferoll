@@ -280,11 +280,24 @@ if [[ "$DO_SHELL" == "true" ]]; then
     banner "SHELL ENVIRONMENT"
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        omz_script="$(download_to_tmp \
-            "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
-            "ohmyzsh-install-XXXXXX.sh")"
-        RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh" bash "$omz_script" --unattended
-        rm -f "$omz_script"
+        # Pinned to a specific release tag instead of piping master/install.sh.
+        # Update OMZ_TAG when upgrading. Tags: https://github.com/ohmyzsh/ohmyzsh/tags
+        local OMZ_TAG="24.9.0"
+        info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
+        if ! git clone --depth 1 --branch "$OMZ_TAG" \
+                https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
+            # Tag may not exist yet — fall back to unattended script install with a warning
+            warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
+            local omz_script
+            omz_script="$(download_to_tmp \
+                "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
+                "ohmyzsh-install-XXXXXX.sh")"
+            RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh (unpinned)" \
+                bash "$omz_script" --unattended
+            rm -f "$omz_script"
+        else
+            ok "Oh My Zsh cloned at ${OMZ_TAG}"
+        fi
     else
         skip "Oh My Zsh already installed"
     fi
@@ -292,15 +305,23 @@ if [[ "$DO_SHELL" == "true" ]]; then
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     mkdir -p "$ZSH_CUSTOM/plugins"
 
+    # Plugin versions — update tags here when upgrading
+    # zsh-autosuggestions tags: https://github.com/zsh-users/zsh-autosuggestions/tags
+    local ZSH_AUTOSUG_TAG="v0.7.1"
+    # fast-syntax-highlighting tags: https://github.com/zdharma-continuum/fast-syntax-highlighting/tags
+    local ZSH_FSH_TAG="v1.55"
+
     [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || \
-        run_optional "Installing zsh-autosuggestions plugin" \
-            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+        run_optional "Installing zsh-autosuggestions ${ZSH_AUTOSUG_TAG}" \
+            git clone --depth=1 --branch "$ZSH_AUTOSUG_TAG" \
+                https://github.com/zsh-users/zsh-autosuggestions \
                 "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 
     # fast-syntax-highlighting MUST be last plugin loaded
     [[ -d "$ZSH_CUSTOM/plugins/fast-syntax-highlighting" ]] || \
-        run_optional "Installing fast-syntax-highlighting plugin" \
-            git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting \
+        run_optional "Installing fast-syntax-highlighting ${ZSH_FSH_TAG}" \
+            git clone --depth=1 --branch "$ZSH_FSH_TAG" \
+                https://github.com/zdharma-continuum/fast-syntax-highlighting \
                 "$ZSH_CUSTOM/plugins/fast-syntax-highlighting"
 
     banner "DEPLOYING SHELL CONFIGS"
@@ -319,6 +340,19 @@ if [[ "$DO_SHELL" == "true" ]]; then
     grep -q "aliases_mac.zsh" "$HOME/.zshrc" || \
         echo '[[ -f "$HOME/.shell/aliases_mac.zsh" ]] && source "$HOME/.shell/aliases_mac.zsh"' \
             >> "$HOME/.zshrc"
+
+    # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.).
+    # .zprofile covers login shells; .zshrc covers interactive non-login shells opened by GUIs.
+    # Both get the brew shellenv line so PATH is set regardless of how the shell is launched.
+    if [[ -d /opt/homebrew/bin ]]; then
+        local _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
+        append_if_missing "$HOME/.zprofile" "$_brew_path_line"
+        append_if_missing "$HOME/.zshrc"    "$_brew_path_line"
+        [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && \
+            export PATH="/opt/homebrew/bin:$PATH" && \
+            ok "/opt/homebrew/bin added to current session PATH"
+        ok "Homebrew PATH ensured in ~/.zprofile and ~/.zshrc"
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
