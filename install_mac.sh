@@ -419,6 +419,33 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
+# 5. TERMINAL THEME
+# ────────────────────────────────────────────────────────────────────────────
+banner "TERMINAL THEME"
+ITERM_THEME_SRC="$SCRIPT_DIR/macos/Cyberwave.itermcolors"
+ITERM_PREFS_DIR="$HOME/Library/Application Support/iTerm2"
+
+if [[ -f "$ITERM_THEME_SRC" ]]; then
+    if [[ -d "/Applications/iTerm.app" ]]; then
+        mkdir -p "$ITERM_PREFS_DIR"
+        _dest="$ITERM_PREFS_DIR/Cyberwave.itermcolors"
+        if [[ ! -f "$_dest" ]]; then
+            cp "$ITERM_THEME_SRC" "$_dest"
+            ok "Cyberwave theme staged — opening iTerm2 to import"
+            quip "Preferences → Profiles → Colors → Color Presets… → Import…"
+            open "$_dest" 2>/dev/null || warn "Could not auto-open theme; import manually from $_dest"
+        else
+            skip "Cyberwave iTerm2 theme already staged"
+        fi
+    else
+        warn "iTerm2 not found — theme file is at: $ITERM_THEME_SRC"
+        quip "Install iTerm2, then double-click the file above to import Cyberwave"
+    fi
+else
+    warn "Cyberwave theme source not found — run from repo root"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
 sc_process_deferred
