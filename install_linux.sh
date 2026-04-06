@@ -138,33 +138,106 @@ cargo_install() {
     else warn "cargo install failed for $name"; FAILED_TOOLS+=("${name}(cargo)"); fi
 }
 
-# ── Helper: install .deb from GitHub releases (arch-aware) ───────────────────
+# ── Helper: install .deb from GitHub releases (arch-aware, with SHA256 verify) ─
 install_github_deb() {
     local check_bin="$1" repo="$2" pattern="$3" name="$4"
     if is_installed "$check_bin"; then skip "$name already installed"; return 0; fi
     [[ "$PKG_MGR" == "apt" ]] || return 0
     info "Installing $name from GitHub releases..."
-    local url curl_args=(-fsSL)
+    local curl_args=(--proto '=https' --tlsv1.2 -fsSL)
     [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] && \
         curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
+
+    # Fetch release JSON once — reuse for both .deb and checksum lookups
+    local release_json
+    release_json=$(curl "${curl_args[@]}" \
+        "https://api.github.com/repos/${repo}/releases/latest")
+
     # Try native arch first, then any match
-    url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
-        | grep browser_download_url | grep -E "$pattern" | grep -v musl | head -1 | cut -d'"' -f4 || true)
+    local url=""
+    url=$(echo "$release_json" | grep browser_download_url \
+        | grep -E "$pattern" | grep -v musl | head -1 | cut -d'"' -f4 || true)
     [[ -z "$url" ]] && \
-        url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/latest" \
-            | grep browser_download_url | grep -E "$pattern" | head -1 | cut -d'"' -f4 || true)
+        url=$(echo "$release_json" | grep browser_download_url \
+            | grep -E "$pattern" | head -1 | cut -d'"' -f4 || true)
     if [[ -z "$url" ]]; then
         warn "No release .deb found for $name matching $pattern"
         FAILED_TOOLS+=("${name}(github)"); return 0
     fi
-    local tmp_deb
-    tmp_deb="$(mktemp "/tmp/${name}-XXXXXX.deb")"
-    if curl -fsSL -o "$tmp_deb" "$url"; then
-        sudo dpkg -i "$tmp_deb" || sudo apt-get install -f -y -q || true
-        ok "$name installed from GitHub"
-    else
+
+    local filename; filename="$(basename "$url")"
+
+    # Locate checksum asset: prefer per-file <filename>.sha256sum or .sha256 (bat-style),
+    # fall back to combined sha256sums/SHA256SUMS/checksums.txt (lsd-style).
+    local sha_url="" sha_combined_url=""
+    sha_url=$(echo "$release_json" | grep browser_download_url \
+        | grep -Ei "${filename}\\.sha256(sum)?\b" | head -1 | cut -d'"' -f4 || true)
+    [[ -z "$sha_url" ]] && \
+        sha_combined_url=$(echo "$release_json" | grep browser_download_url \
+            | grep -Ei '"[^"]*/(sha256sums?|checksums?)(\.txt)?\"' \
+            | head -1 | cut -d'"' -f4 || true)
+
+    # Download .deb
+    local tmp_deb; tmp_deb="$(mktemp "/tmp/${name}-XXXXXX.deb")"
+    if ! curl "${curl_args[@]}" -o "$tmp_deb" "$url"; then
         warn "Download failed for $name"; FAILED_TOOLS+=("${name}(github)")
+        rm -f "$tmp_deb"; return 0
     fi
+
+    # Verify SHA256 — hard-fail on mismatch, soft-warn if no checksum asset found
+    local verified=false
+    local tmp_sha actual expected
+    if [[ -n "$sha_url" ]]; then
+        tmp_sha="$(mktemp "/tmp/${name}-sha256-XXXXXX.txt")"
+        if curl "${curl_args[@]}" -o "$tmp_sha" "$sha_url" && [[ -s "$tmp_sha" ]]; then
+            expected=$(awk '{print $1}' "$tmp_sha" | head -1)
+            actual=$(sha256sum "$tmp_deb" | awk '{print $1}')
+            rm -f "$tmp_sha"
+            if [[ "$expected" == "$actual" ]]; then
+                ok "$name SHA256 verified (${actual:0:16}…)"
+                verified=true
+            else
+                warn "SHA256 MISMATCH for $name — refusing to install"
+                warn "  expected: $expected"
+                warn "  actual:   $actual"
+                FAILED_TOOLS+=("${name}(sha256-mismatch)")
+                rm -f "$tmp_deb"; return 0
+            fi
+        else
+            rm -f "$tmp_sha"
+            warn "$name: SHA256 file download failed — proceeding without verification"
+        fi
+    elif [[ -n "$sha_combined_url" ]]; then
+        tmp_sha="$(mktemp "/tmp/${name}-sha256sums-XXXXXX.txt")"
+        if curl "${curl_args[@]}" -o "$tmp_sha" "$sha_combined_url" && [[ -s "$tmp_sha" ]]; then
+            expected=$(grep -F "$filename" "$tmp_sha" | awk '{print $1}' | head -1)
+            rm -f "$tmp_sha"
+            if [[ -n "$expected" ]]; then
+                actual=$(sha256sum "$tmp_deb" | awk '{print $1}')
+                if [[ "$expected" == "$actual" ]]; then
+                    ok "$name SHA256 verified (${actual:0:16}…)"
+                    verified=true
+                else
+                    warn "SHA256 MISMATCH for $name — refusing to install"
+                    warn "  expected: $expected"
+                    warn "  actual:   $actual"
+                    FAILED_TOOLS+=("${name}(sha256-mismatch)")
+                    rm -f "$tmp_deb"; return 0
+                fi
+            else
+                warn "$name: entry not found in combined SHA file — proceeding without verification"
+            fi
+        else
+            rm -f "$tmp_sha"
+            warn "$name: SHA256 sums file download failed — proceeding without verification"
+        fi
+    else
+        warn "$name: no SHA256 asset found in release — proceeding without verification"
+    fi
+    [[ "$verified" == "false" ]] && _log "WARN" "$name installed without SHA256 verification"
+
+    sudo dpkg -i "$tmp_deb" || sudo apt-get install -f -y -q || true
+    ok "$name installed from GitHub"
     rm -f "$tmp_deb"
 }
 
