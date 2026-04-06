@@ -602,15 +602,23 @@ if [[ "$DO_SHELL" == "true" ]]; then
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     mkdir -p "$ZSH_CUSTOM/plugins"
 
+    # Plugin versions — update tags here when upgrading
+    # zsh-autosuggestions tags: https://github.com/zsh-users/zsh-autosuggestions/tags
+    local ZSH_AUTOSUG_TAG="v0.7.1"
+    # fast-syntax-highlighting tags: https://github.com/zdharma-continuum/fast-syntax-highlighting/tags
+    local ZSH_FSH_TAG="v1.55"
+
     [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || \
-        run_optional "Installing zsh-autosuggestions plugin" \
-            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+        run_optional "Installing zsh-autosuggestions ${ZSH_AUTOSUG_TAG}" \
+            git clone --depth=1 --branch "$ZSH_AUTOSUG_TAG" \
+                https://github.com/zsh-users/zsh-autosuggestions \
                 "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 
     # fast-syntax-highlighting MUST be last plugin loaded
     [[ -d "$ZSH_CUSTOM/plugins/fast-syntax-highlighting" ]] || \
-        run_optional "Installing fast-syntax-highlighting plugin" \
-            git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting \
+        run_optional "Installing fast-syntax-highlighting ${ZSH_FSH_TAG}" \
+            git clone --depth=1 --branch "$ZSH_FSH_TAG" \
+                https://github.com/zdharma-continuum/fast-syntax-highlighting \
                 "$ZSH_CUSTOM/plugins/fast-syntax-highlighting"
 
     banner "DEPLOYING SHELL CONFIGS"
