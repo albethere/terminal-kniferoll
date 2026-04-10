@@ -134,7 +134,8 @@ cargo_install() {
     fi
     [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
     info "Compiling $name via cargo..."
-    if cargo install "$crate"; then ok "$name compiled and ready"
+    read -ra _crates <<< "$crate"
+    if cargo install "${_crates[@]}"; then ok "$name compiled and ready"
     else warn "cargo install failed for $name"; FAILED_TOOLS+=("${name}(cargo)"); fi
 }
 
@@ -659,7 +660,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
             mkdir -p "$FONT_DIR/$_nf"
             unzip -qo "$_font_zip" -d "$FONT_DIR/$_nf"
             ok "$_nf Nerd Font installed"
-            (( _fonts_installed++ ))
+            (( ++_fonts_installed ))
         else
             warn "$_nf Nerd Font download failed"
             FAILED_TOOLS+=("font:$_nf")
