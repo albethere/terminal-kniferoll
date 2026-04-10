@@ -169,6 +169,46 @@ install_github_deb() {
     rm -f "$tmp_deb"
 }
 
+# ── Helper: install yazi from GitHub binary release ──────────────────────────
+install_yazi_binary() {
+    if is_installed "yazi"; then skip "yazi already installed"; return 0; fi
+    local arch triple
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  triple="x86_64-unknown-linux-gnu" ;;
+        aarch64) triple="aarch64-unknown-linux-gnu" ;;
+        *)       warn "yazi: unsupported arch $arch — skipping"; return 0 ;;
+    esac
+    info "Installing yazi from GitHub binary release..."
+    local curl_args=(-fsSL --proto '=https' --tlsv1.2)
+    [[ -n "${GITHUB_TOKEN:-}" && "${GITHUB_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] && \
+        curl_args+=(-H "Authorization: token ${GITHUB_TOKEN}")
+    local url
+    url=$(curl "${curl_args[@]}" "https://api.github.com/repos/sxyazi/yazi/releases/latest" \
+        | grep browser_download_url \
+        | grep "${triple}\.zip" \
+        | head -1 | cut -d'"' -f4 || true)
+    if [[ -z "$url" ]]; then
+        warn "yazi: no binary release found for $triple — skipping"
+        FAILED_TOOLS+=("yazi(github)"); return 0
+    fi
+    local tmp_zip tmp_dir
+    tmp_zip="$(mktemp /tmp/yazi-XXXXXX.zip)"
+    tmp_dir="$(mktemp -d /tmp/yazi-XXXXXX)"
+    if curl "${curl_args[@]}" -o "$tmp_zip" "$url" && unzip -qo "$tmp_zip" -d "$tmp_dir"; then
+        local bin_dir="$HOME/.local/bin"
+        mkdir -p "$bin_dir"
+        # Release zip contains a subdirectory; find the binaries
+        find "$tmp_dir" -maxdepth 2 -type f \( -name "yazi" -o -name "ya" \) \
+            -exec install -m 0755 {} "$bin_dir/" \;
+        ok "yazi installed to $bin_dir"
+    else
+        warn "yazi: download or unzip failed — skipping"
+        FAILED_TOOLS+=("yazi(github)")
+    fi
+    rm -rf "$tmp_zip" "$tmp_dir"
+}
+
 # ── Feature: ensure Rust toolchain ───────────────────────────────────────────
 ensure_rust_toolchain() {
     if ! is_installed "cargo"; then
@@ -328,7 +368,7 @@ check_sudo() {
     quip "Checking sudo access..."
     if ! sudo -v 2>/dev/null; then die "sudo authentication failed"; fi
     ok "sudo — cleared"
-    ( while true; do sudo -n true; sleep 50; done ) &
+    ( set +e; while sudo -n true 2>/dev/null; do sleep 50; done ) &
     SUDO_KEEPALIVE_PID=$!
     trap 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null; true' EXIT
 }
@@ -591,10 +631,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             is_installed "cargo" && cargo_install "nu" "nu" "nushell" || \
                 warn "nushell not in apt and no cargo — skipping"
         fi
-        if ! is_installed "yazi"; then
-            is_installed "cargo" && cargo_install "yazi" "yazi-fm yazi-cli" "yazi" || \
-                warn "yazi not in apt and no cargo — skipping"
-        fi
+        install_yazi_binary
         # mise and atuin are not installed — removed 2026-04-05 (supply chain risk)
         # Use native pyenv/nvm for runtime version management; zsh built-in history for atuin
     else
