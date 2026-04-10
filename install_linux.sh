@@ -637,11 +637,11 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     else
         # Arch/CachyOS via pacman
         PACMAN_PACKAGES=(
-            binutils btop exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
+            binutils btop perl-image-exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
             lz4 m4 micro ncurses ngrep nmap nodejs python-pipx python python-pip rclone
             ripgrep ruby rustup speedtest-cli sqlite tcpdump tealdeer tmux unbound uv
             wireshark-cli yara zsh-autosuggestions cmatrix nushell yazi
-            zoxide starship
+            lsd bat zoxide starship
             # mise and atuin removed 2026-04-05 — supply chain risk
         )
         for pkg in "${PACMAN_PACKAGES[@]}"; do
@@ -719,9 +719,11 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
+trap - ERR  # all failures captured in FAILED_TOOLS — no more ERR trap needed
 sc_process_deferred
 print_summary
 sc_summary
 echo -e "${BOLD}${CYAN}>>> mission complete. knives sharp. out.${RESET}"
 echo -e "${DIM}    Reminder: run 'chsh -s \$(which zsh)' to set Zsh as default shell.${RESET}"
 echo -e "${DIM}    Reminder: source ~/.cargo/env or restart your shell for Rust tools.${RESET}"
+exit 0
