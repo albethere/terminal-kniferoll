@@ -76,10 +76,18 @@ up() {
         step sudo apt full-upgrade -y
         step sudo apt autoremove -y
     fi
+    # AUR helpers build packages in a subshell that inherits PATH. If linuxbrew
+    # is ahead of /usr/bin, PKGBUILDs resolving `python3`/`pkg-config`/etc hit
+    # brew's copies and fail (e.g. evdi-dkms needs system pybind11 + Python.h).
+    # Strip linuxbrew from PATH for the AUR step only.
+    local _aur_path="${PATH//:\/home\/linuxbrew\/.linuxbrew\/sbin/}"
+    _aur_path="${_aur_path//:\/home\/linuxbrew\/.linuxbrew\/bin/}"
+    _aur_path="${_aur_path//\/home\/linuxbrew\/.linuxbrew\/sbin:/}"
+    _aur_path="${_aur_path//\/home\/linuxbrew\/.linuxbrew\/bin:/}"
     if command -v paru &>/dev/null; then
-        step paru -Syu --noconfirm
+        step env PATH="$_aur_path" paru -Syu --noconfirm
     elif command -v yay &>/dev/null; then
-        step yay -Syu --noconfirm
+        step env PATH="$_aur_path" yay -Syu --noconfirm
     elif command -v pacman &>/dev/null; then
         step sudo pacman -Syu --noconfirm
     fi
