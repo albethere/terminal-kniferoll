@@ -503,6 +503,36 @@ if (Get-Command rg -ErrorAction SilentlyContinue) {
     Set-Alias grep rg
 }
 
+# ── System update across every package manager present ──────────────────────
+# `up` detects each Windows package manager on PATH and runs its update flow.
+# Backward-compat aliases: abu / bru both call up (parity with the Unix side).
+function up {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Host '==> winget source update' -ForegroundColor Cyan
+        winget source update
+        Write-Host '==> winget upgrade --all (includes PowerShell if winget-managed)' -ForegroundColor Cyan
+        winget upgrade --all --accept-source-agreements --accept-package-agreements --include-unknown --silent
+    }
+    if (Get-Command scoop -ErrorAction SilentlyContinue) {
+        Write-Host '==> scoop update' -ForegroundColor Cyan
+        scoop update
+        Write-Host '==> scoop update *' -ForegroundColor Cyan
+        scoop update *
+        Write-Host '==> scoop cleanup *' -ForegroundColor Cyan
+        scoop cleanup *
+    }
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        Write-Host '==> choco upgrade all' -ForegroundColor Cyan
+        choco upgrade all -y
+    }
+    if (Get-Command Update-Module -ErrorAction SilentlyContinue) {
+        Write-Host '==> Update-Module (PSGallery, CurrentUser scope)' -ForegroundColor Cyan
+        Update-Module -Scope CurrentUser -Force -ErrorAction Continue
+    }
+}
+Set-Alias abu up
+Set-Alias bru up
+
 # ── PRIVATE API Keys (loaded from environment, never hardcoded) ───────────────
 # Set these in your user environment or a secrets manager:
 #   $env:PRIVATE_VT_API_KEY, $env:PRIVATE_PT_API_KEY, etc.
