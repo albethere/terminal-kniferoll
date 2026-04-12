@@ -1,5 +1,5 @@
 # Supply Chain Risk Analysis — terminal-kniferoll
-Updated: 2026-04-05
+Updated: 2026-04-05 (supply chain hardening sweep #2)
 
 ## Summary
 
@@ -13,8 +13,10 @@ removal of automatic execution of HIGH-risk custom-domain scripts without user c
   users choose their risk policy at install start or per-package in Manual mode
 - `sd` fully removed from install_linux.sh and install_mac.sh BREW_PACKAGES (was orphaned)
 - JetBrainsMono Nerd Font pinned to v3.4.0 in both Linux and macOS scripts; TLS flags added
-- Oh My Zsh and Homebrew install scripts are fetched from GitHub `master`/`HEAD` — no commit pinning
-- GitHub release .deb downloads (lsd, bat) lack SHA256 verification — deferred
+- **NEW** GitHub release .deb downloads (lsd, bat) now verified via SHA256 before `dpkg -i`
+- **NEW** Oh My Zsh cloned at pinned tag `24.9.0` instead of curl-piping master/install.sh
+- **NEW** zsh-autosuggestions pinned to `v0.7.1`; fast-syntax-highlighting pinned to `v1.55`
+- Homebrew install script is fetched from GitHub `HEAD` — no commit pinning (lower priority)
 - cargo installs (weathr, trippy, etc.) rely on crates.io registry integrity with no version pinning
 
 ## Supply Chain Guard (`lib/supply_chain_guard.sh`)
@@ -60,18 +62,18 @@ SC_ALLOW_RISKY=1      # Shorthand for SC_RISK_TOLERANCE=3
 
 | Tool | Source | Version Pinned | Verification | Fetch Method | Risk | Notes |
 |---|---|---|---|---|---|---|
-| Oh My Zsh | raw.githubusercontent.com/ohmyzsh/ohmyzsh/master | NO (master) | None | download-then-run | MEDIUM | Trusted project; TLS enforced; no commit pin |
+| Oh My Zsh | github.com/ohmyzsh/ohmyzsh | YES v24.9.0 (pinned tag) | None | git clone --depth 1 --branch | LOW | Cloned at pinned tag; no longer piping master/install.sh |
 | Homebrew | raw.githubusercontent.com/Homebrew/install/HEAD | NO (HEAD) | None | download-then-run | MEDIUM | Trusted project; TLS enforced; no commit pin |
 | rustup | sh.rustup.rs | NO (latest) | None | download-then-run | MEDIUM | Official Rust installer; TLS 1.2+ enforced in all scripts |
 | mise | mise.jdx.dev/install.sh | NO | None | download-then-run | HIGH | Custom domain; TLS 1.2+ enforced; no checksum |
 | atuin | setup.atuin.sh | NO | None | download-then-run | HIGH | Custom domain; TLS 1.2+ enforced; no checksum |
 | uv | astral.sh/uv/install.sh | NO | None | download-then-run | HIGH | Custom domain; TLS 1.2+ already enforced in install-v2.sh |
 | 1Password CLI | downloads.1password.com (apt repo) | stable channel | GPG signed apt repo | package manager | LOW | Official signed repo; GPG key verified |
-| lsd | GitHub releases (lsd-rs/lsd) latest | NO (latest API) | None | download .deb | MEDIUM | GitHub origin; no SHA256 check |
-| bat | GitHub releases (sharkdp/bat) latest | NO (latest API) | None | download .deb | MEDIUM | GitHub origin; no SHA256 check |
+| lsd | GitHub releases (lsd-rs/lsd) latest | NO (latest API) | SHA256 verified | download .deb | LOW | SHA256 from release assets verified before dpkg -i |
+| bat | GitHub releases (sharkdp/bat) latest | NO (latest API) | SHA256 verified | download .deb | LOW | SHA256 from release assets verified before dpkg -i |
 | JetBrainsMono NF | GitHub releases (ryanoasis/nerd-fonts) | YES v3.4.0 (pinned this sweep) | None | download zip | MEDIUM | Pinned version; SHA256 deferred |
-| zsh-autosuggestions | github.com/zsh-users (git clone) | NO (default branch) | None | git clone --depth=1 | MEDIUM | Well-known plugin; no commit pin |
-| zsh-fast-syntax-highlighting | github.com/zdharma-continuum (git clone) | NO (default branch) | None | git clone --depth=1 | MEDIUM | Well-known plugin; no commit pin |
+| zsh-autosuggestions | github.com/zsh-users (git clone) | YES v0.7.1 (pinned tag) | None | git clone --depth=1 --branch | LOW | Pinned to release tag |
+| zsh-fast-syntax-highlighting | github.com/zdharma-continuum (git clone) | YES v1.55 (pinned tag) | None | git clone --depth=1 --branch | LOW | Pinned to release tag; FSH still loaded last |
 | weathr | crates.io | NO (latest) | crates.io checksums | cargo install | MEDIUM | crates.io provides hash verification; version unspecified |
 | trippy | crates.io | NO (latest) | crates.io checksums | cargo install | MEDIUM | crates.io provides hash verification |
 | yazi | crates.io | NO (latest) | crates.io checksums | cargo install | MEDIUM | crates.io provides hash verification |
@@ -108,7 +110,28 @@ SC_ALLOW_RISKY=1      # Shorthand for SC_RISK_TOLERANCE=3
 
 ## Mitigations Implemented
 
-### 2026-04-05 sweep
+### 2026-04-05 sweep #2 (supply chain hardening)
+
+4. **SHA256 verification for lsd/bat .debs** — `install_github_deb()` in `install_linux.sh`
+   now fetches the GitHub release JSON once, locates a checksum asset (per-file
+   `<name>.sha256sum`/`.sha256` or combined `sha256sums`/`SHA256SUMS`), and verifies the
+   download before `dpkg -i`. Hard-fails on mismatch; soft-warns if no checksum asset published.
+
+5. **Oh My Zsh pinned to tag** — Both `install_linux.sh` and `install_mac.sh` now clone
+   `ohmyzsh/ohmyzsh` at `git clone --depth 1 --branch 24.9.0` instead of piping
+   `master/tools/install.sh`. Fallback to install.sh with a warning if the tag is not found.
+
+6. **zsh plugins pinned to release tags** — Both installers clone zsh-autosuggestions at
+   `v0.7.1` and fast-syntax-highlighting at `v1.55` via `--branch <tag>`. Version variables
+   (`ZSH_AUTOSUG_TAG`, `ZSH_FSH_TAG`) are defined adjacent to each clone with links to upstream
+   tags pages. FSH-last order unchanged.
+
+7. **Homebrew PATH fixed for non-login shells (macOS)** — `install_mac.sh` now appends the
+   `brew shellenv` eval line to both `~/.zprofile` (login shells) and `~/.zshrc` (non-login
+   interactive shells opened by Terminal.app / GUI editors). Closes the missing-PATH bug for
+   the silo user.
+
+### 2026-04-05 sweep #1
 
 1. **Supply chain guard** — `lib/supply_chain_guard.sh` added. All three HIGH-risk packages
    (mise, atuin, uv) on Linux are now routed through `sc_install()` with safe alternatives
@@ -136,18 +159,18 @@ SC_ALLOW_RISKY=1      # Shorthand for SC_RISK_TOLERANCE=3
 
 These items were identified but not implemented to avoid breaking install flow. Each has a corresponding tracker task.
 
-| Item | Reason Deferred | Recommended Action |
+| Item | Status | Notes |
 |---|---|---|
-| SHA256 verification for lsd/bat .deb | GitHub releases provide SHA files; requires multi-step download + verify | Parse GitHub release API for SHA256 assets; verify before `dpkg -i` |
-| SHA256 verification for JetBrainsMono font | Releases include sha256 checksums; requires download + compare | Download `.sha256` file alongside zip; verify with `sha256sum -c` |
-| Pin Oh My Zsh to a git tag/SHA | Install script doesn't accept a version arg | Clone from a pinned tag instead of running the install script |
-| Pin Homebrew install script | No version parameter available | Consider using a specific commit hash in the raw.githubusercontent.com URL |
-| Pin atuin via cargo instead of setup.atuin.sh | Pacman has atuin natively; apt does not | Use `cargo install atuin` as fallback for apt systems; pin crate version |
-| Pin mise via cargo or package manager | Pacman has mise natively; apt relies on custom script | Use `cargo install mise` as fallback for apt systems |
-| Version-pin cargo installs (weathr, trippy, yazi, etc.) | Requires updating version strings when upgrading | Add `--version X.Y.Z` to all `cargo install` calls |
-| Pin zsh-autosuggestions/zsh-fast-syntax-highlighting to a tag | `git clone` tracks default branch | Add `--branch <tag>` to git clone commands |
-| Verify uv install script via astral.sh hash | astral.sh publishes SHA256 for uv installers | Pin version in URL: `https://astral.sh/uv/0.6.x/install.sh` |
-| SLSA provenance for GitHub release binaries | lsd/bat do not yet publish SLSA provenance | Monitor for SLSA support; add provenance verification when available |
+| ~~SHA256 verification for lsd/bat .deb~~ | **DONE** 2026-04-05 | `install_github_deb()` now verifies against release checksum assets |
+| ~~Pin Oh My Zsh to a git tag/SHA~~ | **DONE** 2026-04-05 | Cloned at tag `24.9.0`; update `OMZ_TAG` variable to upgrade |
+| ~~Pin zsh-autosuggestions/zsh-fast-syntax-highlighting to a tag~~ | **DONE** 2026-04-05 | `v0.7.1` / `v1.55`; update `ZSH_AUTOSUG_TAG` / `ZSH_FSH_TAG` to upgrade |
+| SHA256 verification for JetBrainsMono font | Deferred | Releases include sha256 checksums; download `.sha256` file alongside zip; verify with `sha256sum -c` |
+| Pin Homebrew install script | Deferred | No version parameter available; consider specific commit hash in raw.githubusercontent.com URL |
+| Pin atuin via cargo instead of setup.atuin.sh | N/A | atuin removed 2026-04-05 |
+| Pin mise via cargo or package manager | N/A | mise removed 2026-04-05 |
+| Version-pin cargo installs (weathr, trippy, yazi, etc.) | Deferred | Add `--version X.Y.Z` to all `cargo install` calls |
+| Verify uv install script via astral.sh hash | Deferred | Pin version in URL: `https://astral.sh/uv/0.6.x/install.sh` |
+| SLSA provenance for GitHub release binaries | Deferred | Monitor for SLSA support from lsd/bat; add provenance verification when available |
 
 ---
 
