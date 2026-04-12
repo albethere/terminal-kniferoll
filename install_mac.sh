@@ -4,8 +4,7 @@
 # =============================================================================
 #
 # Supply chain controls: lib/supply_chain_guard.sh is sourced below.
-# Set SC_RISK_TOLERANCE=1..4 in environment to bypass the interactive prompt.
-# Set SC_ALLOW_RISKY=1 to match pre-guard (permissive) behavior in automation.
+# Always runs in strict mode (TLS enforced, hashes verified where available).
 # =============================================================================
 
 set -Eeuo pipefail
@@ -260,8 +259,7 @@ fi
 DO_SHELL="$INSTALL_SHELL"
 DO_PROJECTOR="$INSTALL_PROJECTOR"
 
-# ── Supply chain risk policy (interactive TTY only; no-op in batch/CI) ────────
-sc_set_risk_tolerance
+info "Supply chain: strict (TLS enforced, hashes verified where available)"
 
 # ── Evict tools removed from this project ─────────────────────────────────────
 banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
