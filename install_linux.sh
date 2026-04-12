@@ -115,12 +115,44 @@ apt_batch() {
         quip "Nothing new here — pantry stocked."; return 0
     fi
     info "Installing: ${to_install[*]}"
-    if sudo apt-get install -y --fix-missing -q "${to_install[@]}" 2>&1 | \
+    if [[ "$ST_ENABLED" == "true" && -n "$ST_VERBOSE_LOG" ]]; then
+        if sudo apt-get install -y --fix-missing "${to_install[@]}" \
+                2>&1 | tee -a "$ST_VERBOSE_LOG" | \
+                grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
+            ok "$section — complete"
+        else
+            warn "Partial failure in $section — check log"
+            for pkg in "${to_install[@]}"; do FAILED_TOOLS+=("$pkg"); done
+        fi
+    elif sudo apt-get install -y --fix-missing -q "${to_install[@]}" 2>&1 | \
         grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
         ok "$section — complete"
     else
         warn "Partial failure in $section — check log"
         for pkg in "${to_install[@]}"; do FAILED_TOOLS+=("$pkg"); done
+    fi
+}
+
+# ── Helper: nmap install with debconf pre-seeding (tk-021) ───────────────────
+# wireshark-common triggers an interactive debconf prompt ("Should non-superusers
+# capture packets?") that blocks unattended installs.  Pre-seeding + a hard
+# timeout + --no-install-recommends keeps this safe and non-blocking.
+_nmap_safe_install() {
+    if is_installed "nmap" || dpkg -s nmap &>/dev/null 2>&1; then
+        skip "nmap already installed"; return 0
+    fi
+    info "Pre-seeding debconf for wireshark-common (prevents interactive hang)..."
+    echo 'wireshark-common wireshark-common/install-setuid boolean false' | \
+        sudo debconf-set-selections 2>/dev/null || true
+    info "Installing nmap (timeout 120s, no recommended extras)..."
+    if DEBIAN_FRONTEND=noninteractive \
+        timeout 120 sudo apt-get install -y --fix-missing -q \
+            --no-install-recommends nmap 2>&1 | \
+            grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
+        ok "nmap installed"
+    else
+        warn "nmap install failed or timed out — logged"
+        FAILED_TOOLS+=("nmap")
     fi
 }
 
@@ -342,9 +374,14 @@ install_homebrew_and_gemini() {
     if is_installed "brew"; then
         brew_bin="$(command -v brew)"; skip "Homebrew already installed"
     else
-        [[ "$PKG_MGR" == "apt" ]] && \
-            run_optional "Installing Homebrew build prerequisites" \
-                bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
+        if [[ "$PKG_MGR" == "apt" ]]; then
+            if command -v gcc &>/dev/null || dpkg -s build-essential &>/dev/null 2>&1; then
+                skip "gcc / build-essential already installed"
+            else
+                run_optional "Installing Homebrew build prerequisites" \
+                    bash -c "$SUDO apt-get install -y -qq build-essential procps curl file git"
+            fi
+        fi
         local brew_script
         brew_script="$(download_to_tmp \
             "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" \
@@ -364,7 +401,7 @@ install_homebrew_and_gemini() {
         append_if_missing "$HOME/.bashrc" \
             'command -v brew >/dev/null && eval "$(brew shellenv)"'
         run_optional "Updating Homebrew" brew update
-        run_optional "Installing gcc via Homebrew" brew install gcc
+        is_installed "gcc" || run_optional "Installing gcc via Homebrew" brew install gcc
         if ! is_installed "gemini"; then
             run_optional "Installing Gemini CLI (Homebrew)" brew install gemini-cli
             ! is_installed "gemini" && is_installed "npm" && \
@@ -551,6 +588,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/supply_chain_guard.sh
 source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
 
+# ── Split-terminal UI (tk-022) ────────────────────────────────────────────────
+# shellcheck source=lib/split_terminal.sh
+source "$SCRIPT_DIR/lib/split_terminal.sh"
+
 # ── ASCII banner ──────────────────────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}"
 cat << 'BANNER'
@@ -567,6 +608,11 @@ echo
 if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
     show_menu
 fi
+
+# ── Initialise split-terminal UI (tk-022) ────────────────────────────────────
+# Draws right-panel box and starts background verbose renderer.
+# Falls back silently if terminal is too narrow or non-interactive.
+st_init
 
 # ── Resolve deployment flags ──────────────────────────────────────────────────
 DO_CORE=true
@@ -690,8 +736,10 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     [[ "${DO_BREW:-true}" == "true" ]] && install_homebrew_and_gemini
 
     if [[ "$PKG_MGR" == "apt" ]]; then
+        # nmap handled separately — wireshark dep requires debconf pre-seeding (tk-021)
+        _nmap_safe_install
         apt_batch "SECURITY TOOLING" \
-            "nmap:nmap" "tcpdump:tcpdump" "ngrep:ngrep" \
+            "tcpdump:tcpdump" "ngrep:ngrep" \
             "tshark:wireshark" "yara:yara" "unbound:unbound" \
             "certtool:gnutls-bin" "hexyl:hexyl"
 
@@ -812,6 +860,7 @@ fi
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
 trap - ERR  # all failures captured in FAILED_TOOLS — no more ERR trap needed
+st_cleanup  # tear down split-terminal UI before printing summary (tk-022)
 sc_process_deferred
 print_summary
 sc_summary
