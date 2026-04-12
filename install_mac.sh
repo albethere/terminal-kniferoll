@@ -282,13 +282,13 @@ if [[ "$DO_SHELL" == "true" ]]; then
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
         # Pinned to a specific release tag instead of piping master/install.sh.
         # Update OMZ_TAG when upgrading. Tags: https://github.com/ohmyzsh/ohmyzsh/tags
-        local OMZ_TAG="24.9.0"
+        OMZ_TAG="24.9.0"
         info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
         if ! git clone --depth 1 --branch "$OMZ_TAG" \
                 https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
             # Tag may not exist yet — fall back to unattended script install with a warning
             warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
-            local omz_script
+            omz_script=""
             omz_script="$(download_to_tmp \
                 "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
                 "ohmyzsh-install-XXXXXX.sh")"
@@ -307,9 +307,9 @@ if [[ "$DO_SHELL" == "true" ]]; then
 
     # Plugin versions — update tags here when upgrading
     # zsh-autosuggestions tags: https://github.com/zsh-users/zsh-autosuggestions/tags
-    local ZSH_AUTOSUG_TAG="v0.7.1"
+    ZSH_AUTOSUG_TAG="v0.7.1"
     # fast-syntax-highlighting tags: https://github.com/zdharma-continuum/fast-syntax-highlighting/tags
-    local ZSH_FSH_TAG="v1.55"
+    ZSH_FSH_TAG="v1.55"
 
     [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || \
         run_optional "Installing zsh-autosuggestions ${ZSH_AUTOSUG_TAG}" \
@@ -345,7 +345,7 @@ if [[ "$DO_SHELL" == "true" ]]; then
     # .zprofile covers login shells; .zshrc covers interactive non-login shells opened by GUIs.
     # Both get the brew shellenv line so PATH is set regardless of how the shell is launched.
     if [[ -d /opt/homebrew/bin ]]; then
-        local _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
+        _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
         append_if_missing "$HOME/.zprofile" "$_brew_path_line"
         append_if_missing "$HOME/.zshrc"    "$_brew_path_line"
         [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && \
