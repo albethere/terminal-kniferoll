@@ -2,13 +2,15 @@
 # TERMINAL-KNIFEROLL: Defensive Security Engineer Configuration
 # ==============================================================================
 
-# --- PATH & ENVIRONMENT ---
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
-
-# --- LINUXBREW ---
+# --- HOMEBREW (Linux & macOS) ---
 if [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
     eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+elif [[ -f "/opt/homebrew/bin/brew" ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
+
+# --- PATH & ENVIRONMENT ---
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # --- OH-MY-ZSH ---
 export ZSH="$HOME/.oh-my-zsh"
@@ -75,14 +77,14 @@ export ABUSEIPDB_API_KEY="${PRIVATE_ABUSEIPDB_API_KEY:-}"
 # --- INITIALIZATION ---
 [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
 
-# Wrapped evals
-command -v zoxide &>/dev/null && eval "$(zoxide init zsh --cmd cd)"
-
-# Welcome message
-if command -v fastfetch &>/dev/null; then
+# Welcome message (run early to avoid being blocked by heavy evals)
+if [[ -z "$DISABLE_WELCOME" ]] && command -v fastfetch &>/dev/null; then
     if command -v lolcat &>/dev/null; then
-        fastfetch --pipe | lolcat
+        fastfetch --pipe | lolcat -f
     else
         fastfetch
     fi
 fi
+
+# Wrapped evals
+command -v zoxide &>/dev/null && eval "$(zoxide init zsh --cmd cd)"
