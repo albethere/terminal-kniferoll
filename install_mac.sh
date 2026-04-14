@@ -85,6 +85,16 @@ ask_yes_no() {
 # ── Helper: check if binary is on PATH ───────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
 
+# ── Helper: check if macOS .app is installed ─────────────────────────────────
+is_app_installed() {
+    [[ -d "/Applications/$1.app" ]] || [[ -d "$HOME/Applications/$1.app" ]]
+}
+
+# ── Helper: detect MDM-managed / restricted device ───────────────────────────
+is_restricted_device() {
+    profiles status -type enrollment 2>/dev/null | grep -qi "yes"
+}
+
 # ── Cleanup: tools explicitly removed from this project ──────────────────────
 cleanup_removed_tools() {
     local did_work=false
@@ -156,6 +166,7 @@ show_help() {
     echo "Options:"
     echo "  --shell          Install shell environment only (skip projector)"
     echo "  --projector      Install projector tools only (skip shell)"
+    echo "  --no-casks       Skip desktop application cask installs (iTerm2, Keka)"
     echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
@@ -169,6 +180,8 @@ show_custom_menu() {
         && INSTALL_SHELL=true || INSTALL_SHELL=false
     ask_yes_no "  Core security & developer tools?" \
         && DO_SECURITY=true || DO_SECURITY=false
+    ask_yes_no "  Desktop applications (iTerm2, Keka)?" \
+        && DO_DESKTOP=true || DO_DESKTOP=false
     ask_yes_no "  Projector stack (Rust, weathr, JetBrains font, config)?" \
         && INSTALL_PROJECTOR=true || INSTALL_PROJECTOR=false
 }
@@ -198,11 +211,13 @@ INSTALL_PROJECTOR=true
 EXPLICIT_FLAG=false
 MODE="${MODE:-batch}"
 DO_SECURITY=true
+DO_DESKTOP=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; EXPLICIT_FLAG=true ;;
         --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; EXPLICIT_FLAG=true ;;
+        --no-casks)    DO_DESKTOP=false; EXPLICIT_FLAG=true ;;
         --interactive) MODE=interactive ;;
         --help)        show_help; exit 0 ;;
         *) err "Unknown parameter: $1"; show_help; exit 1 ;;
@@ -399,6 +414,39 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         run_optional "Installing wtfis via pipx" pipx install wtfis
         run_optional "Configuring pipx path"     pipx ensurepath
     }
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 3a. DESKTOP APPLICATIONS (Casks)
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_DESKTOP" == "true" ]]; then
+    banner "DESKTOP APPLICATIONS"
+
+    _restricted=false
+    if is_restricted_device; then
+        _restricted=true
+        info "Managed device detected — cask installs may require admin approval"
+    fi
+
+    # ── iTerm2 ──────────────────────────────────────────────────────────────
+    if is_app_installed "iTerm"; then
+        skip "iTerm2 already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — iTerm2 may need Self Service or manual install"
+        run_optional "Installing iTerm2" brew install --cask iterm2
+        is_app_installed "iTerm" || warn "iTerm2 not found — install manually or via Self Service"
+    fi
+
+    # ── Keka ────────────────────────────────────────────────────────────────
+    if is_app_installed "Keka"; then
+        skip "Keka already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — Keka may need Self Service or manual install"
+        run_optional "Installing Keka" brew install --cask keka
+        is_app_installed "Keka" || warn "Keka not found — install manually or via Self Service"
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
