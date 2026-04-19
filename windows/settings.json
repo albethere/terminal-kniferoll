@@ -1,0 +1,154 @@
+{
+    "$help": "https://aka.ms/terminal-documentation",
+    "$schema": "https://aka.ms/terminal-profiles-schema",
+    "actions": [
+        {
+            "command": {
+                "action": "sendInput",
+                "input": "\u001b\r"
+            },
+            "id": "User.sendInput.8F63D3A9"
+        }
+    ],
+    "copyFormatting": "all",
+    "copyOnSelect": false,
+    "defaultProfile": "{35e2979f-ddd1-4adb-82f9-627d6ef9193d}",
+    "keybindings": [
+        {
+            "id": "User.sendInput.8F63D3A9",
+            "keys": "shift+enter"
+        },
+        {
+            "id": "Terminal.DuplicatePaneAuto",
+            "keys": "alt+shift+d"
+        },
+        {
+            "id": "Terminal.CopyToClipboard",
+            "keys": "ctrl+c"
+        },
+        {
+            "id": "Terminal.PasteFromClipboard",
+            "keys": "ctrl+v"
+        }
+    ],
+    "language": "en-US",
+    "newTabMenu": [
+        {
+            "type": "remainingProfiles"
+        }
+    ],
+    "profiles": {
+        "defaults": {
+            "colorScheme": "Cyberwave"
+        },
+        "list": [
+            {
+                "commandline": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"",
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{a3a2e83a-884a-5379-baa8-16f193a13b21}",
+                "hidden": false,
+                "name": "PowerShell 7",
+                "source": "Windows.Terminal.PowershellCore"
+            },
+            {
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{76c7fd1e-7480-52bf-9619-df9ecd866b7a}",
+                "hidden": false,
+                "icon": "C:\\Users\\ctrl\\OneDrive\\Pictures\\icons-logos\\debian-svgrepo-com (1).png",
+                "name": "Debian WSL",
+                "source": "Microsoft.WSL"
+            },
+            {
+                "commandline": "wsl.exe -d Debian -- zsh -ic \"cd ~/Projects && copilot; exec zsh\"",
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{35e2979f-ddd1-4adb-82f9-627d6ef9193d}",
+                "hidden": false,
+                "icon": "C:\\Users\\ctrl\\OneDrive\\Pictures\\icons-logos\\icons8-github-copilot-96.png",
+                "name": "GitHub Copilot (Debian WSL)",
+                "pathTranslationStyle": "wsl",
+                "startingDirectory": null
+            },
+            {
+                "commandline": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoExit -Command \"cd ~\\Projects; ghcs\"",
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{c8e4a305-1b2d-4e7f-9a3c-6d8b5f0e2a71}",
+                "hidden": false,
+                "icon": "C:\\Users\\ctrl\\OneDrive\\Pictures\\icons-logos\\icons8-github-copilot-96.png",
+                "name": "GitHub Copilot (Windows)"
+            },
+            {
+                "commandline": "wsl.exe -d Debian -- zsh -ic \"cd ~/Projects && claude; exec zsh\"",
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{e5f7a1b3-2c9d-4f6e-8b0a-3d7c5e9f1a42}",
+                "hidden": false,
+                "icon": "C:\\Users\\ctrl\\OneDrive\\Pictures\\icons-logos\\Claude_AI_symbol.svg.png",
+                "name": "Claude Code (Debian WSL)",
+                "pathTranslationStyle": "wsl",
+                "startingDirectory": null
+            },
+            {
+                "commandline": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoExit -Command \"cd ~\\Projects; claude\"",
+                "font": {
+                    "face": "Ubuntu Mono",
+                    "size": 13
+                },
+                "guid": "{f6a8b2c4-3d0e-5a7f-9c1b-4e8d6f0a2b53}",
+                "hidden": false,
+                "icon": "C:\\Users\\ctrl\\OneDrive\\Pictures\\icons-logos\\Claude_AI_symbol.svg.png",
+                "name": "Claude Code (Windows)"
+            },
+            {
+                "guid": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}",
+                "hidden": false,
+                "name": "Windows PowerShell"
+            },
+            {
+                "guid": "{0caa0dad-35be-5f56-a8ff-afceeeaa6101}",
+                "hidden": false,
+                "name": "Command Prompt"
+            }
+        ]
+    },
+    "schemes": [
+        {
+            "name": "Cyberwave",
+            "background": "#0B0221",
+            "foreground": "#D4C5F9",
+            "cursorColor": "#FF2A6D",
+            "selectionBackground": "#7B2D8B",
+            "black": "#1A1A2E",
+            "red": "#FF2A6D",
+            "green": "#05D9E8",
+            "yellow": "#FEDE5D",
+            "blue": "#BD93F9",
+            "purple": "#FF6AC1",
+            "cyan": "#01C8EF",
+            "white": "#E0D4FF",
+            "brightBlack": "#4D4D7A",
+            "brightRed": "#FF5C8A",
+            "brightGreen": "#0FF0FC",
+            "brightYellow": "#FFE66D",
+            "brightBlue": "#C792EA",
+            "brightPurple": "#FF79C6",
+            "brightCyan": "#66FFFF",
+            "brightWhite": "#F8F8F2"
+        }
+    ],
+    "searchWebDefaultQueryUrl": "https://www.google.com/search?q=%22%s%22",
+    "themes": []
+}

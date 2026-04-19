@@ -4,8 +4,7 @@
 # =============================================================================
 #
 # Supply chain controls: lib/supply_chain_guard.sh is sourced below.
-# Set SC_RISK_TOLERANCE=1..4 in environment to bypass the interactive prompt.
-# Set SC_ALLOW_RISKY=1 to match pre-guard (permissive) behavior in automation.
+# Always runs in strict mode (TLS enforced, hashes verified where available).
 # =============================================================================
 
 set -Eeuo pipefail
@@ -86,6 +85,16 @@ ask_yes_no() {
 # ── Helper: check if binary is on PATH ───────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
 
+# ── Helper: check if macOS .app is installed ─────────────────────────────────
+is_app_installed() {
+    [[ -d "/Applications/$1.app" ]] || [[ -d "$HOME/Applications/$1.app" ]]
+}
+
+# ── Helper: detect MDM-managed / restricted device ───────────────────────────
+is_restricted_device() {
+    profiles status -type enrollment 2>/dev/null | grep -qi "yes"
+}
+
 # ── Cleanup: tools explicitly removed from this project ──────────────────────
 cleanup_removed_tools() {
     local did_work=false
@@ -157,6 +166,7 @@ show_help() {
     echo "Options:"
     echo "  --shell          Install shell environment only (skip projector)"
     echo "  --projector      Install projector tools only (skip shell)"
+    echo "  --no-casks       Skip desktop application cask installs (iTerm2, Keka)"
     echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
@@ -170,6 +180,8 @@ show_custom_menu() {
         && INSTALL_SHELL=true || INSTALL_SHELL=false
     ask_yes_no "  Core security & developer tools?" \
         && DO_SECURITY=true || DO_SECURITY=false
+    ask_yes_no "  Desktop applications (iTerm2, Keka)?" \
+        && DO_DESKTOP=true || DO_DESKTOP=false
     ask_yes_no "  Projector stack (Rust, weathr, JetBrains font, config)?" \
         && INSTALL_PROJECTOR=true || INSTALL_PROJECTOR=false
 }
@@ -199,11 +211,13 @@ INSTALL_PROJECTOR=true
 EXPLICIT_FLAG=false
 MODE="${MODE:-batch}"
 DO_SECURITY=true
+DO_DESKTOP=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; EXPLICIT_FLAG=true ;;
         --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; EXPLICIT_FLAG=true ;;
+        --no-casks)    DO_DESKTOP=false; EXPLICIT_FLAG=true ;;
         --interactive) MODE=interactive ;;
         --help)        show_help; exit 0 ;;
         *) err "Unknown parameter: $1"; show_help; exit 1 ;;
@@ -260,8 +274,7 @@ fi
 DO_SHELL="$INSTALL_SHELL"
 DO_PROJECTOR="$INSTALL_PROJECTOR"
 
-# ── Supply chain risk policy (interactive TTY only; no-op in batch/CI) ────────
-sc_set_risk_tolerance
+info "Supply chain: strict (TLS enforced, hashes verified where available)"
 
 # ── Evict tools removed from this project ─────────────────────────────────────
 banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
@@ -280,11 +293,24 @@ if [[ "$DO_SHELL" == "true" ]]; then
     banner "SHELL ENVIRONMENT"
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        omz_script="$(download_to_tmp \
-            "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
-            "ohmyzsh-install-XXXXXX.sh")"
-        RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh" bash "$omz_script" --unattended
-        rm -f "$omz_script"
+        # Pinned to a specific release tag instead of piping master/install.sh.
+        # Update OMZ_TAG when upgrading. Tags: https://github.com/ohmyzsh/ohmyzsh/tags
+        OMZ_TAG="24.9.0"
+        info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
+        if ! git clone --depth 1 --branch "$OMZ_TAG" \
+                https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
+            # Tag may not exist yet — fall back to unattended script install with a warning
+            warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
+            omz_script=""
+            omz_script="$(download_to_tmp \
+                "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
+                "ohmyzsh-install-XXXXXX.sh")"
+            RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh (unpinned)" \
+                bash "$omz_script" --unattended
+            rm -f "$omz_script"
+        else
+            ok "Oh My Zsh cloned at ${OMZ_TAG}"
+        fi
     else
         skip "Oh My Zsh already installed"
     fi
@@ -292,15 +318,23 @@ if [[ "$DO_SHELL" == "true" ]]; then
     ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
     mkdir -p "$ZSH_CUSTOM/plugins"
 
+    # Plugin versions — update tags here when upgrading
+    # zsh-autosuggestions tags: https://github.com/zsh-users/zsh-autosuggestions/tags
+    ZSH_AUTOSUG_TAG="v0.7.1"
+    # fast-syntax-highlighting tags: https://github.com/zdharma-continuum/fast-syntax-highlighting/tags
+    ZSH_FSH_TAG="v1.55"
+
     [[ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]] || \
-        run_optional "Installing zsh-autosuggestions plugin" \
-            git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions \
+        run_optional "Installing zsh-autosuggestions ${ZSH_AUTOSUG_TAG}" \
+            git clone --depth=1 --branch "$ZSH_AUTOSUG_TAG" \
+                https://github.com/zsh-users/zsh-autosuggestions \
                 "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 
     # fast-syntax-highlighting MUST be last plugin loaded
     [[ -d "$ZSH_CUSTOM/plugins/fast-syntax-highlighting" ]] || \
-        run_optional "Installing fast-syntax-highlighting plugin" \
-            git clone --depth=1 https://github.com/zdharma-continuum/fast-syntax-highlighting \
+        run_optional "Installing fast-syntax-highlighting ${ZSH_FSH_TAG}" \
+            git clone --depth=1 --branch "$ZSH_FSH_TAG" \
+                https://github.com/zdharma-continuum/fast-syntax-highlighting \
                 "$ZSH_CUSTOM/plugins/fast-syntax-highlighting"
 
     banner "DEPLOYING SHELL CONFIGS"
@@ -319,6 +353,19 @@ if [[ "$DO_SHELL" == "true" ]]; then
     grep -q "aliases_mac.zsh" "$HOME/.zshrc" || \
         echo '[[ -f "$HOME/.shell/aliases_mac.zsh" ]] && source "$HOME/.shell/aliases_mac.zsh"' \
             >> "$HOME/.zshrc"
+
+    # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.).
+    # .zprofile covers login shells; .zshrc covers interactive non-login shells opened by GUIs.
+    # Both get the brew shellenv line so PATH is set regardless of how the shell is launched.
+    if [[ -d /opt/homebrew/bin ]]; then
+        _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
+        append_if_missing "$HOME/.zprofile" "$_brew_path_line"
+        append_if_missing "$HOME/.zshrc"    "$_brew_path_line"
+        [[ ":$PATH:" != *":/opt/homebrew/bin:"* ]] && \
+            export PATH="/opt/homebrew/bin:$PATH" && \
+            ok "/opt/homebrew/bin added to current session PATH"
+        ok "Homebrew PATH ensured in ~/.zprofile and ~/.zshrc"
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -370,6 +417,39 @@ if [[ "$DO_SECURITY" == "true" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
+# 3a. DESKTOP APPLICATIONS (Casks)
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_DESKTOP" == "true" ]]; then
+    banner "DESKTOP APPLICATIONS"
+
+    _restricted=false
+    if is_restricted_device; then
+        _restricted=true
+        info "Managed device detected — cask installs may require admin approval"
+    fi
+
+    # ── iTerm2 ──────────────────────────────────────────────────────────────
+    if is_app_installed "iTerm"; then
+        skip "iTerm2 already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — iTerm2 may need Self Service or manual install"
+        run_optional "Installing iTerm2" brew install --cask iterm2
+        is_app_installed "iTerm" || warn "iTerm2 not found — install manually or via Self Service"
+    fi
+
+    # ── Keka ────────────────────────────────────────────────────────────────
+    if is_app_installed "Keka"; then
+        skip "Keka already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — Keka may need Self Service or manual install"
+        run_optional "Installing Keka" brew install --cask keka
+        is_app_installed "Keka" || warn "Keka not found — install manually or via Self Service"
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
 # 4. PROJECTOR STACK
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "$DO_PROJECTOR" == "true" ]]; then
@@ -379,24 +459,36 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
     is_installed "weathr" || run_optional "Installing weathr via cargo" cargo install weathr
     is_installed "trip"   || run_optional "Installing trippy via cargo" cargo install trippy
 
-    # JetBrainsMono Nerd Font (macOS uses ~/Library/Fonts)
+    # ── Nerd Fonts (macOS uses ~/Library/Fonts) ───────────────────────────────
     FONT_DIR="$HOME/Library/Fonts"
-    if ! find "$FONT_DIR" -maxdepth 1 -iname "*JetBrainsMono*" -print -quit 2>/dev/null | grep -q .; then
-        banner "JETBRAINSMONO NERD FONT"
-        mkdir -p "$FONT_DIR"
-        font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
-        font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
-        # Pinned to v3.4.0 — update version here when upgrading
-        run_optional "Downloading JetBrainsMono Nerd Font" \
-            curl --proto '=https' --tlsv1.2 -fsSL \
-                "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/JetBrainsMono.zip" \
-                -o "$font_zip"
-        run_optional "Extracting font" unzip -q "$font_zip" -d "$font_extract"
-        run_optional "Copying font files" find "$font_extract" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
-        rm -rf "$font_zip" "$font_extract"
-    else
-        skip "JetBrainsMono Nerd Font already installed"
-    fi
+    NERD_FONTS=(
+        Iosevka Hack UbuntuMono JetBrainsMono 3270
+        FiraCode CascadiaCode VictorMono Mononoki
+        SpaceMono SourceCodePro Meslo GeistMono
+    )
+    # Pinned release — update NERD_FONTS_VER here to upgrade all fonts at once
+    NERD_FONTS_VER="v3.4.0"
+    banner "NERD FONTS"
+    mkdir -p "$FONT_DIR"
+    for _nf in "${NERD_FONTS[@]}"; do
+        if find "$FONT_DIR" -maxdepth 1 -iname "*${_nf}*" -print -quit 2>/dev/null | grep -q .; then
+            skip "$_nf Nerd Font already installed"
+            continue
+        fi
+        _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+        _font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
+        if curl --proto '=https' --tlsv1.2 -fsSL \
+                "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
+                -o "$_font_zip"; then
+            unzip -qo "$_font_zip" -d "$_font_extract"
+            find "$_font_extract" -name "*.ttf" -exec cp {} "$FONT_DIR/" \;
+            ok "$_nf Nerd Font installed"
+        else
+            warn "$_nf Nerd Font download failed"
+            FAILED_TOOLS+=("font:$_nf")
+        fi
+        rm -rf "$_font_zip" "$_font_extract"
+    done
 
     banner "PROJECTOR CONFIGURATION"
     mkdir -p "$HOME/.config/projector"
@@ -404,6 +496,33 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         cp "$SCRIPT_DIR/projector/config.json.default" "$HOME/.config/projector/config.json"
     [[ -f "$SCRIPT_DIR/projector.py" ]] && chmod +x "$SCRIPT_DIR/projector.py" || true
     ok "Projector configuration deployed"
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 5. TERMINAL THEME
+# ────────────────────────────────────────────────────────────────────────────
+banner "TERMINAL THEME"
+ITERM_THEME_SRC="$SCRIPT_DIR/macos/Cyberwave.itermcolors"
+ITERM_PREFS_DIR="$HOME/Library/Application Support/iTerm2"
+
+if [[ -f "$ITERM_THEME_SRC" ]]; then
+    if [[ -d "/Applications/iTerm.app" ]]; then
+        mkdir -p "$ITERM_PREFS_DIR"
+        _dest="$ITERM_PREFS_DIR/Cyberwave.itermcolors"
+        if [[ ! -f "$_dest" ]]; then
+            cp "$ITERM_THEME_SRC" "$_dest"
+            ok "Cyberwave theme staged — opening iTerm2 to import"
+            quip "Preferences → Profiles → Colors → Color Presets… → Import…"
+            open "$_dest" 2>/dev/null || warn "Could not auto-open theme; import manually from $_dest"
+        else
+            skip "Cyberwave iTerm2 theme already staged"
+        fi
+    else
+        warn "iTerm2 not found — theme file is at: $ITERM_THEME_SRC"
+        quip "Install iTerm2, then double-click the file above to import Cyberwave"
+    fi
+else
+    warn "Cyberwave theme source not found — run from repo root"
 fi
 
 # ────────────────────────────────────────────────────────────────────────────

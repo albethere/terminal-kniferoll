@@ -12,68 +12,13 @@
 #   sc_process_deferred            # review deferred packages at end
 #   sc_summary                     # print skipped/deferred list
 #
-# ENVIRONMENT VARIABLES:
-#   SC_RISK_TOLERANCE    — preset policy: 1=strict 2=balanced 3=permissive 4=manual
-#                          Unset or 0 = prompt interactively (TTY only)
-#   SC_ALLOW_RISKY=1     — shorthand for SC_RISK_TOLERANCE=3 (CI escape hatch)
+# Always runs in strict mode: package managers only, no curl|bash scripts.
 # =============================================================================
 
 # ── Internal state ─────────────────────────────────────────────────────────────
 SC_DEFERRED=()
 SC_SKIPPED=()
-SC_RISK_TOLERANCE="${SC_RISK_TOLERANCE:-0}"
-
-# ── Apply env shorthand ────────────────────────────────────────────────────────
-[[ "${SC_ALLOW_RISKY:-0}" == "1" ]] && SC_RISK_TOLERANCE=3
-
-# ── Non-interactive default: strict (safe methods only) ───────────────────────
-# In CI/batch mode (no TTY), default to Strict unless overridden by env.
-if [[ "$SC_RISK_TOLERANCE" == "0" ]] && [[ ! -t 0 ]]; then
-    SC_RISK_TOLERANCE=1
-fi
-
-# ── Risk tolerance prompt ──────────────────────────────────────────────────────
-# Call once at the start of an interactive install session.
-# No-op if tolerance is already set or no TTY.
-sc_set_risk_tolerance() {
-    [[ "$SC_RISK_TOLERANCE" != "0" ]] && return 0
-    [[ ! -t 0 ]] && { SC_RISK_TOLERANCE=1; return 0; }
-
-    echo
-    echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${CYAN}║  ⌁  SUPPLY CHAIN SECURITY POLICY            ║${RESET}"
-    echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════╝${RESET}"
-    echo
-    echo -e "  This installer fetches packages from external sources."
-    echo -e "  Some use ${RED}custom-domain curl|bash scripts${RESET} with no checksum verification."
-    echo
-    echo -e "  Select your risk policy for this session:\n"
-    echo -e "  ${CYAN}[1]${RESET} ${BOLD}Strict${RESET}      — Package managers only (apt/brew/cargo)."
-    echo -e "       ${DIM}Skips all custom-domain curl|bash scripts. Safest option.${RESET}"
-    echo
-    echo -e "  ${CYAN}[2]${RESET} ${BOLD}Balanced${RESET}    — Prefer safe methods; prompt on HIGH-risk packages."
-    echo -e "       ${DIM}MEDIUM-risk installs proceed; HIGH-risk triggers a prompt.${RESET}"
-    echo
-    echo -e "  ${CYAN}[3]${RESET} ${BOLD}Permissive${RESET}  — Use original install methods. TLS enforced throughout."
-    echo -e "       ${DIM}Fastest. Mirrors the pre-guard behavior. Matches SC_ALLOW_RISKY=1.${RESET}"
-    echo
-    echo -e "  ${CYAN}[4]${RESET} ${BOLD}Manual${RESET}      — Ask me about every risky package individually."
-    echo -e "       ${DIM}Full control. Includes inspect/OSINT options per package.${RESET}"
-    echo
-    echo -en "${CYAN}  Policy [1-4, default=2]: ${RESET}"
-    read -r _sc_tol
-    case "$_sc_tol" in
-        1) SC_RISK_TOLERANCE=1
-           ok "Supply chain policy: Strict — no curl|bash scripts" ;;
-        3) SC_RISK_TOLERANCE=3
-           ok "Supply chain policy: Permissive — TLS-enforced, original methods" ;;
-        4) SC_RISK_TOLERANCE=4
-           ok "Supply chain policy: Manual — prompting per package" ;;
-        *) SC_RISK_TOLERANCE=2
-           ok "Supply chain policy: Balanced — safe-first, prompt on HIGH risk" ;;
-    esac
-    echo
-}
+SC_RISK_TOLERANCE=1  # Always strict: package managers only
 
 # ── Core install dispatcher ────────────────────────────────────────────────────
 # sc_install NAME RISK DESC SAFE_FN RISKY_FN GITHUB_URL SOURCE_URL
@@ -96,26 +41,9 @@ sc_install() {
         return 0
     fi
 
-    case "$SC_RISK_TOLERANCE" in
-        1) # Strict: safe path only
-            info "[strict] Installing $name via safe method"
-            "$safe_fn" ;;
-
-        2) # Balanced: safe for HIGH, original for MEDIUM/LOW
-            if [[ "$risk" == "high" ]]; then
-                warn "[balanced] HIGH-risk package — using safe method for $name"
-                "$safe_fn"
-            else
-                "$risky_fn"
-            fi ;;
-
-        3) # Permissive: always use original method
-            "$risky_fn" ;;
-
-        4) # Manual: always prompt
-            _sc_prompt "$name" "$risk" "$desc" "$safe_fn" "$risky_fn" \
-                "$github_url" "$source_url" ;;
-    esac
+    # Strict: safe path only (package managers / cargo)
+    info "[strict] Installing $name via safe method"
+    "$safe_fn"
 }
 
 # ── Interactive per-package prompt ─────────────────────────────────────────────

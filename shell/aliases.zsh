@@ -62,3 +62,67 @@ if command -v fastfetch &>/dev/null && command -v lolcat &>/dev/null; then
 elif command -v fastfetch &>/dev/null; then
     alias ff='fastfetch'
 fi
+
+# --- System update across every package manager present ---
+# `up` detects each package manager on PATH and runs its update flow.
+# Backward-compat aliases: `abu` (was apt+brew) and `bru` (was brew) both call up.
+up() {
+    local rc=0 step
+    step() { print -P "%F{75}==> $*%f"; "$@" || rc=$?; }
+
+    # System package managers
+    if command -v apt &>/dev/null; then
+        step sudo apt update
+        step sudo apt full-upgrade -y
+        step sudo apt autoremove -y
+    fi
+    # AUR helpers build packages in a subshell that inherits PATH. If linuxbrew
+    # is ahead of /usr/bin, PKGBUILDs resolving `python3`/`pkg-config`/etc hit
+    # brew's copies and fail (e.g. evdi-dkms needs system pybind11 + Python.h).
+    # Strip linuxbrew from PATH for the AUR step only.
+    local _aur_path="${PATH//:\/home\/linuxbrew\/.linuxbrew\/sbin/}"
+    _aur_path="${_aur_path//:\/home\/linuxbrew\/.linuxbrew\/bin/}"
+    _aur_path="${_aur_path//\/home\/linuxbrew\/.linuxbrew\/sbin:/}"
+    _aur_path="${_aur_path//\/home\/linuxbrew\/.linuxbrew\/bin:/}"
+    if command -v paru &>/dev/null; then
+        step env PATH="$_aur_path" paru -Syu --noconfirm
+    elif command -v yay &>/dev/null; then
+        step env PATH="$_aur_path" yay -Syu --noconfirm
+    elif command -v pacman &>/dev/null; then
+        step sudo pacman -Syu --noconfirm
+    fi
+    if command -v dnf &>/dev/null; then
+        step sudo dnf upgrade --refresh -y
+    fi
+    if command -v zypper &>/dev/null; then
+        step sudo zypper refresh
+        step sudo zypper update -y
+    fi
+    if command -v apk &>/dev/null; then
+        step sudo apk update
+        step sudo apk upgrade
+    fi
+
+    # User-space package managers
+    if command -v brew &>/dev/null; then
+        step brew update
+        step brew upgrade
+        step brew cleanup
+    fi
+    if command -v flatpak &>/dev/null; then
+        step flatpak update -y
+    fi
+    if command -v snap &>/dev/null; then
+        step sudo snap refresh
+    fi
+
+    # macOS system updates
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v softwareupdate &>/dev/null; then
+        step softwareupdate -i -a
+    fi
+
+    unfunction step 2>/dev/null
+    return $rc
+}
+alias abu='up'
+alias bru='up'
