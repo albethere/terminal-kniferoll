@@ -79,6 +79,53 @@ append_if_missing() {
     grep -Fq "$line" "$file" || echo "$line" >> "$file"
 }
 
+# ── Helper: upsert the managed Zscaler block in ~/.zshrc ─────────────────────
+# Extracts the BEGIN/END-marked block from shell/zshrc.zsh and refreshes it in
+# ~/.zshrc. If markers exist: replaces atomically (3-pass awk). If not: appends.
+# Safe on every run — idempotent. Preserves all user content outside the block.
+upsert_zshrc_managed_block() {
+    local zshrc="$HOME/.zshrc"
+    local MBEGIN="# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)"
+    local MEND="# END terminal-kniferoll zscaler"
+    local src="$SCRIPT_DIR/shell/zshrc.zsh"
+
+    [[ ! -f "$src" ]] && { warn "upsert_zshrc_managed_block: $src not found"; return 0; }
+
+    local _blk; _blk="$(mktemp)"
+    awk "/^# BEGIN terminal-kniferoll zscaler/,/^# END terminal-kniferoll zscaler/" \
+        "$src" > "$_blk"
+    if [[ ! -s "$_blk" ]]; then
+        rm -f "$_blk"
+        warn "upsert_zshrc_managed_block: BEGIN/END markers missing in $src"
+        return 0
+    fi
+
+    touch "$zshrc"
+    local _tmp; _tmp="$(mktemp)"
+    chmod 600 "$_tmp"
+
+    if grep -Fq "$MBEGIN" "$zshrc"; then
+        # 3-pass reassembly: lines-before-BEGIN + new-block + lines-after-END
+        awk -v m="$MBEGIN" '$0==m{exit} {print}' "$zshrc" > "$_tmp"
+        cat "$_blk" >> "$_tmp"
+        awk -v m="$MEND" 'found{print} $0==m{found=1}' "$zshrc" >> "$_tmp"
+        mv -f "$_tmp" "$zshrc"
+        ok "~/.zshrc: Zscaler managed block refreshed"
+    else
+        { cat "$zshrc"; echo; cat "$_blk"; } > "$_tmp"
+        mv -f "$_tmp" "$zshrc"
+        ok "~/.zshrc: Zscaler managed block appended"
+    fi
+    rm -f "$_blk"
+
+    # Belt-and-suspenders: warn if stale old-style block in other rc files
+    for _rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zprofile"; do
+        [[ -f "$_rc" ]] && grep -q "ZSC_PEM_MAC\|ZSC_PEM_LINUX" "$_rc" 2>/dev/null && \
+            warn "Stale Zscaler block found in $_rc — remove the ZSC_PEM_MAC/LINUX lines manually"
+    done
+    unset _rc
+}
+
 # ── Helper: yes/no prompt ────────────────────────────────────────────────────
 ask_yes_no() {
     local prompt="$1"
@@ -675,7 +722,12 @@ if [[ "$DO_SHELL" == "true" ]]; then
 
     banner "DEPLOYING SHELL CONFIGS"
     mkdir -p "$HOME/.shell"
-    cp "$SCRIPT_DIR/shell/zshrc.zsh"   "$HOME/.zshrc"
+    if [[ ! -f "$HOME/.zshrc" ]]; then
+        cp "$SCRIPT_DIR/shell/zshrc.zsh" "$HOME/.zshrc"
+        ok "~/.zshrc deployed (fresh install)"
+    else
+        upsert_zshrc_managed_block
+    fi
     cp "$SCRIPT_DIR/shell/aliases.zsh" "$HOME/.shell/aliases.zsh"
     cp "$SCRIPT_DIR/shell/plugins.zsh" "$HOME/.shell/plugins.zsh"
     ok "Shell configurations deployed"
@@ -731,7 +783,7 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
         nushell speedtest-cli sqlite starship tealdeer tmux
         yazi zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
         # Language runtimes
-        go openjdk python@3.11 ruby
+        go openjdk python@3.12 ruby
     )
     for pkg in "${DEV_PACKAGES[@]}"; do
         if brew list "$pkg" &>/dev/null 2>&1; then
@@ -740,6 +792,17 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
             run_optional "Installing $pkg" brew install "$pkg" || FAILED_TOOLS+=("$pkg")
         fi
     done
+
+    # Upgrade pip and run TLS smoke tests.
+    # PIP_CERT is already set if Zscaler is active, so pip inherits the CA bundle.
+    local _py3; _py3="$(command -v python3.12 || command -v python3 || true)"
+    if [[ -n "$_py3" ]]; then
+        run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip
+        run_optional "Python TLS smoke test (ssl.create_default_context)" \
+            "$_py3" -c "import ssl; ssl.create_default_context().load_default_certs(); print('SSL OK')"
+        run_optional "pip dry-run TLS test (requests)" \
+            "$_py3" -m pip install --dry-run requests 2>&1 | grep -E "(Requirement|Would|Could)" || true
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -952,7 +1015,16 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 12. TOOL CERT CONFIGURATION (Zscaler managed devices)
+# 12. ZSHRC MANAGED BLOCK REFRESH (runs on every invocation, any mode)
+# ────────────────────────────────────────────────────────────────────────────
+# Self-heals the Zscaler block in ~/.zshrc even if DO_SHELL=false (e.g. projector
+# mode). Idempotent — no-op if block is already current.
+if [[ -f "$HOME/.zshrc" ]]; then
+    upsert_zshrc_managed_block
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 13. TOOL CERT CONFIGURATION (Zscaler managed devices)
 # ────────────────────────────────────────────────────────────────────────────
 configure_tool_certs
 

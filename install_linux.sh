@@ -79,6 +79,43 @@ append_if_missing() {
     grep -Fq "$line" "$file" || echo "$line" >> "$file"
 }
 
+# ── Helper: upsert the managed Zscaler block in ~/.zshrc ─────────────────────
+# Same logic as install_mac.sh — see that file for full rationale.
+upsert_zshrc_managed_block() {
+    local zshrc="$HOME/.zshrc"
+    local MBEGIN="# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)"
+    local MEND="# END terminal-kniferoll zscaler"
+    local src="$SCRIPT_DIR/shell/zshrc.zsh"
+
+    [[ ! -f "$src" ]] && { warn "upsert_zshrc_managed_block: $src not found"; return 0; }
+
+    local _blk; _blk="$(mktemp)"
+    awk "/^# BEGIN terminal-kniferoll zscaler/,/^# END terminal-kniferoll zscaler/" \
+        "$src" > "$_blk"
+    if [[ ! -s "$_blk" ]]; then
+        rm -f "$_blk"
+        warn "upsert_zshrc_managed_block: BEGIN/END markers missing in $src"
+        return 0
+    fi
+
+    touch "$zshrc"
+    local _tmp; _tmp="$(mktemp)"
+    chmod 600 "$_tmp"
+
+    if grep -Fq "$MBEGIN" "$zshrc"; then
+        awk -v m="$MBEGIN" '$0==m{exit} {print}' "$zshrc" > "$_tmp"
+        cat "$_blk" >> "$_tmp"
+        awk -v m="$MEND" 'found{print} $0==m{found=1}' "$zshrc" >> "$_tmp"
+        mv -f "$_tmp" "$zshrc"
+        ok "~/.zshrc: Zscaler managed block refreshed"
+    else
+        { cat "$zshrc"; echo; cat "$_blk"; } > "$_tmp"
+        mv -f "$_tmp" "$zshrc"
+        ok "~/.zshrc: Zscaler managed block appended"
+    fi
+    rm -f "$_blk"
+}
+
 # ── Helper: yes/no prompt ────────────────────────────────────────────────────
 ask_yes_no() {
     local prompt="$1"
@@ -644,6 +681,11 @@ if [[ "$DO_CORE" == "true" ]]; then
             bash -c "$SUDO apt-get update -qq"
         run_optional "Installing core prerequisites" \
             bash -c "$SUDO apt-get install -y -qq ca-certificates curl gnupg unzip fontconfig"
+        if [[ -f "/usr/local/share/ca-certificates/zscaler.pem" ]] || \
+           [[ -f "/usr/local/share/ca-certificates/zscaler.crt" ]]; then
+            run_optional "Updating system CA bundle (Zscaler cert detected)" \
+                bash -c "$SUDO update-ca-certificates"
+        fi
     else
         run_optional "Refreshing pacman database" \
             bash -c "$SUDO pacman -Sy --noconfirm"
@@ -714,7 +756,12 @@ if [[ "$DO_SHELL" == "true" ]]; then
 
     banner "DEPLOYING SHELL CONFIGS"
     mkdir -p "$HOME/.shell"
-    cp "$SCRIPT_DIR/shell/zshrc.zsh"   "$HOME/.zshrc"
+    if [[ ! -f "$HOME/.zshrc" ]]; then
+        cp "$SCRIPT_DIR/shell/zshrc.zsh" "$HOME/.zshrc"
+        ok "~/.zshrc deployed (fresh install)"
+    else
+        upsert_zshrc_managed_block
+    fi
     cp "$SCRIPT_DIR/shell/aliases.zsh" "$HOME/.shell/aliases.zsh"
     cp "$SCRIPT_DIR/shell/plugins.zsh" "$HOME/.shell/plugins.zsh"
     ok "Shell configurations deployed"
@@ -811,6 +858,14 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     }
     is_installed "lolcat" || \
         run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
+
+    # pip upgrade + TLS smoke test
+    local _py3; _py3="$(command -v python3 || true)"
+    if [[ -n "$_py3" ]]; then
+        run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip
+        run_optional "Python TLS smoke test (ssl.create_default_context)" \
+            "$_py3" -c "import ssl; ssl.create_default_context().load_default_certs(); print('SSL OK')"
+    fi
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -841,6 +896,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         fi
         _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
         if curl --proto '=https' --tlsv1.2 -fsSL \
+                ${CURL_CA_BUNDLE:+--cacert "$CURL_CA_BUNDLE"} \
                 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
                 -o "$_font_zip"; then
             mkdir -p "$FONT_DIR/$_nf"
@@ -868,6 +924,9 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
 # ────────────────────────────────────────────────────────────────────────────
+# ── ZSHRC MANAGED BLOCK REFRESH (runs on every invocation, any mode) ─────────
+upsert_zshrc_managed_block
+
 trap - ERR  # all failures captured in FAILED_TOOLS — no more ERR trap needed
 st_cleanup  # tear down split-terminal UI before printing summary (tk-022)
 sc_process_deferred

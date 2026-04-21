@@ -58,6 +58,7 @@ fi
 #   - /usr/local/share/ca-certificates/zscaler.pem
 #
 # If none found, no Zscaler env is set and standard system trust applies.
+# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)
 unset ZSC_PEM
 if [[ "$OSTYPE" == darwin* ]]; then
     for _zsc_p in \
@@ -90,6 +91,7 @@ if [[ -n "${ZSC_PEM:-}" ]]; then
     # HOMEBREW_CURLOPT_CACERT is macOS-only (brew uses this for its internal curl)
     [[ "$OSTYPE" == darwin* ]] && export HOMEBREW_CURLOPT_CACERT="$ZSC_PEM"
 fi
+# END terminal-kniferoll zscaler
 
 # --- WTFIS API KEYS ---
 export VT_API_KEY="${PRIVATE_VT_API_KEY:-}"

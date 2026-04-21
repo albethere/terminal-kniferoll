@@ -1445,6 +1445,17 @@ function Install-ShellExperience {
     Install-Winget 'astral-sh.uv'               'uv (Python)' 'uv'
     Install-Winget 'starship.starship'          'starship'    'starship'
     Install-Winget 'OpenJS.NodeJS.LTS'          'Node.js LTS' 'node'
+    Install-Winget 'Python.Python.3.12'         'Python 3.12' 'python'
+
+    # pip upgrade + TLS smoke test (Windows Cert Store already includes Zscaler root after hard gate)
+    if (Test-Cmd python) {
+        Invoke-Optional "Upgrading pip" {
+            python -m pip install --upgrade pip 2>&1 | Out-Null
+        } | Out-Null
+        Invoke-Optional "Python TLS smoke test (ssl.create_default_context)" {
+            python -c "import ssl; ssl.create_default_context().load_default_certs(); print('SSL OK')" 2>&1
+        } | Out-Null
+    }
 
     # ---- Tools easier to get from Scoop ------------------------------------
     Install-Scoop 'lsd'   'lsd'   'lsd'
@@ -1878,7 +1889,6 @@ function Install-Projector {
     Write-Section "Projector Stack"
 
     Install-Winget 'Fastfetch-cli.Fastfetch' 'fastfetch'    'fastfetch'
-    Install-Winget 'Python.Python.3.12'      'Python 3.12'  'python'
     Install-Scoop  'cmatrix'                 'cmatrix'      'cmatrix'
 
     # cbonsai has no native Windows binary
