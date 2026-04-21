@@ -1,134 +1,193 @@
-# sweep-zscaler.awk — POSIX awk state machine: strip old Zscaler rc blocks
+#!/usr/bin/awk -f
+# scripts/lib/sweep-zscaler.awk
 #
-# Input:  path to an rc file (pass as awk argument; reads stdin otherwise)
-# Output: rc file content with all Zscaler regions removed (stdout)
+# Strips old Zscaler config regions from shell rc files.
+# Output: cleaned content (stdout), region metadata (stderr).
+# Stderr format: "REGION <start_line> <end_line>"
 #
-# Region rules
-#   - A region is entered when a zscaler-start trigger is seen at depth 0 only.
-#   - Depth tracks if/for/while/until/case/brace openers and fi/done/esac/}
-#     closers.  Zscaler lines inside user-defined function bodies (depth > 0)
-#     are PRESERVED — only top-level regions are swept.
-#   - Inside a region all lines are eaten until a non-Zscaler, non-blank,
-#     non-structural-close line appears at depth == entry_depth (0).
-#   - Multiple regions per file are handled in a single pass.
+# Design rules (per spec):
+#   - Regions are ONLY identified at depth 0. Zscaler variables inside a user
+#     function or other control structure are preserved intact (TC3).
+#   - Region types:
+#       1. Marker-bounded: # BEGIN terminal-kniferoll zscaler … # END …
+#       2. Organic: ZSC_PEM_LINUX=, ZSC_PEM_MAC=, ZSC_PEM=, export <known_var>=
+#   - Organic regions extend across blank lines (buffered) and control structures
+#     that open AND close entirely within the Zscaler context.
+#   - Trailing blank lines before the first "other" line are emitted back (kept).
+#   - Multiple regions per file are all stripped in a single pass.
 
-function is_trigger(line) {
-    if (line ~ /ZSC_PEM_LINUX[[:space:]]*=/) return 1
-    if (line ~ /ZSC_PEM_MAC[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*(export[[:space:]]+)?ZSC_PEM[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*unset[[:space:]]+ZSC_PEM/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+CURL_CA_BUNDLE[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+SSL_CERT_FILE[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+REQUESTS_CA_BUNDLE[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+NODE_EXTRA_CA_CERTS[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+GIT_SSL_CAINFO[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+AWS_CA_BUNDLE[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+PIP_CERT[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*export[[:space:]]+HOMEBREW_CURLOPT_CACERT[[:space:]]*=/) return 1
-    if (line ~ /^[[:space:]]*#[[:space:]]*BEGIN terminal-kniferoll zscaler/) return 1
+# ── Classifiers ──────────────────────────────────────────────────────────────
+
+function is_region_trigger(line) {
+    if (line ~ /^[[:space:]]*(ZSC_PEM_LINUX|ZSC_PEM_MAC|ZSC_PEM)[[:space:]]*=/) return 1
+    if (line ~ /^[[:space:]]*export[[:space:]]+(ZSC_PEM|CURL_CA_BUNDLE|GIT_SSL_CAINFO|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|NODE_EXTRA_CA_CERTS|AWS_CA_BUNDLE|PIP_CERT|HOMEBREW_CURLOPT_CACERT)[[:space:]]*=/) return 1
     return 0
 }
 
-function is_zscaler_content(line) {
-    if (line ~ /ZSC_PEM/) return 1
-    if (line ~ /CURL_CA_BUNDLE/) return 1
-    if (line ~ /SSL_CERT_FILE/) return 1
-    if (line ~ /REQUESTS_CA_BUNDLE/) return 1
-    if (line ~ /NODE_EXTRA_CA_CERTS/) return 1
-    if (line ~ /GIT_SSL_CAINFO/) return 1
-    if (line ~ /AWS_CA_BUNDLE/) return 1
-    if (line ~ /PIP_CERT/) return 1
-    if (line ~ /HOMEBREW_CURLOPT_CACERT/) return 1
-    if (line ~ /[Zz]scaler/) return 1
+function is_marker_begin(line) {
+    return (line ~ /^[[:space:]]*#[[:space:]]*BEGIN[[:space:]]+terminal-kniferoll[[:space:]]+zscaler/)
+}
+
+function is_marker_end(line) {
+    return (line ~ /^[[:space:]]*#[[:space:]]*END[[:space:]]+terminal-kniferoll[[:space:]]+zscaler/)
+}
+
+function is_zsc_extend(line) {
+    # Extends (but does not start) an organic region.
+    # Zscaler-themed comments after they've been preceded by a trigger.
+    return (line ~ /^[[:space:]]*#.*[Zz]scaler/ && !is_marker_begin(line) && !is_marker_end(line))
+}
+
+function is_blank(line) {
+    return (line ~ /^[[:space:]]*$/)
+}
+
+function is_control_open(line) {
+    # if/for/while/until/case block openers
+    if (line ~ /^[[:space:]]*(if|for|while|until|case)[[:space:]([]/) return 1
+    # function name { or function name() {
+    if (line ~ /^[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[({]/) return 1
+    # POSIX-style func() {
+    if (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*(\{|$)/) return 1
+    # bare { at start of line
+    if (line ~ /^[[:space:]]*\{[[:space:]]*(#.*)?$/) return 1
     return 0
 }
 
-function is_structural_close(line) {
-    if (line ~ /^[[:space:]]*(fi|done|esac)[[:space:]]*(#.*)?$/) return 1
+function is_control_close(line) {
+    if (line ~ /^[[:space:]]*(fi|esac|done)[[:space:]]*(;[[:space:]]*(#.*)?)?$/) return 1
     if (line ~ /^[[:space:]]*\}[[:space:]]*(#.*)?$/) return 1
     return 0
 }
 
-function depth_delta(line,    d) {
-    d = 0
-    if (line ~ /^[[:space:]]*(if|for|while|until)[[:space:]]/) d++
-    if (line ~ /^[[:space:]]*case[[:space:]]/) d++
-    if (line ~ /\{[[:space:]]*(#.*)?$/ && line !~ /\{.*\}/) d++
-    if (line ~ /^[[:space:]]*(fi|done|esac)[[:space:]]*(#.*)?$/) d--
-    if (line ~ /^[[:space:]]*\}[[:space:]]*(#.*)?$/) d--
-    return d
-}
+# ── State ────────────────────────────────────────────────────────────────────
 
 BEGIN {
-    in_region   = 0
-    depth       = 0
-    entry_depth = 0
+    in_region  = 0   # 1 while inside any Zscaler region
+    in_marker  = 0   # 1 when inside a BEGIN/END marker region
+    depth      = 0   # nesting depth for control structures
+    rstart     = 0   # line number where current region began
+    pend_buf   = ""  # buffered blank lines (pending flush decision)
+    pend_cnt   = 0   # count of buffered blank lines
 }
 
-{
-    pre_depth = depth
-    d = depth_delta($0)
+# ── Main rule ────────────────────────────────────────────────────────────────
 
+{
+    line = $0
+
+    # ── NORMAL MODE ──────────────────────────────────────────────────────────
     if (!in_region) {
 
-        depth += d
-        if (depth < 0) depth = 0
-
-        if (pre_depth == 0 && is_trigger($0)) {
-            in_region   = 1
-            entry_depth = 0
-        } else {
-            print
-        }
-
-    } else {
-
-        if (pre_depth < entry_depth) {
-            # Structural close popped below entry — belongs to outer scope
-            in_region = 0
-            depth += d
-            if (depth < 0) depth = 0
-            print
-
-        } else if (pre_depth == entry_depth) {
-
-            if ($0 ~ /^[[:space:]]*$/) {
-                depth += d
-                # blank — consume (trailing-blank cleanup)
-
-            } else if (is_zscaler_content($0)) {
-                depth += d
-                if (depth < 0) depth = 0
-                # Zscaler-related line — eat
-
-            } else if (is_structural_close($0)) {
-                depth += d
-                if (depth < 0) depth = 0
-                # fi/done/esac/} closing a Zscaler control structure — eat
-
-            } else if ($0 ~ /^[[:space:]]*elif[[:space:]]/ || \
-                       $0 ~ /^[[:space:]]*else[[:space:]]/ || \
-                       $0 ~ /^[[:space:]]*else$/) {
-                depth += d
-                # elif/else branch of Zscaler if block — stay in region
-
-            } else {
-                # Non-Zscaler, non-blank at entry depth — region ends
-                in_region = 0
-                depth += d
-                if (depth < 0) depth = 0
-                print
-                if (pre_depth == 0 && is_trigger($0)) {
-                    in_region   = 1
-                    entry_depth = 0
-                }
+        # Check for region start BEFORE updating depth (so depth==0 test is
+        # relative to the line *before* any opener on this line).
+        if (depth == 0) {
+            if (is_marker_begin(line)) {
+                in_region = 1; in_marker = 1
+                rstart = NR; pend_buf = ""; pend_cnt = 0
+                next
             }
-
-        } else {
-            # pre_depth > entry_depth: inside a deeper structure — eat
-            depth += d
-            if (depth < 0) depth = 0
+            if (is_region_trigger(line)) {
+                in_region = 1; in_marker = 0
+                rstart = NR; pend_buf = ""; pend_cnt = 0
+                next
+            }
         }
 
+        # Update depth then emit.
+        if (is_control_open(line))                    depth++
+        else if (is_control_close(line) && depth > 0) depth--
+        print line
+        next
+    }
+
+    # ── MARKER REGION MODE ───────────────────────────────────────────────────
+    if (in_marker) {
+        if (is_marker_end(line)) {
+            print "REGION " rstart " " NR > "/dev/stderr"
+            in_region = 0; in_marker = 0
+        }
+        # Every line inside the marker block (including END itself) is stripped.
+        next
+    }
+
+    # ── ORGANIC REGION MODE ──────────────────────────────────────────────────
+
+    # Blank lines: buffer — we don't yet know if they're inside the region or
+    # trailing whitespace that belongs to the user.
+    if (is_blank(line)) {
+        pend_buf = pend_buf line "\n"
+        pend_cnt++
+        next
+    }
+
+    # Non-blank line inside organic region.
+
+    if (depth > 0) {
+        # We're inside a control structure that was opened inside this region.
+        # Track depth, discard buffered blanks, strip this line.
+        if (is_control_open(line))                    depth++
+        else if (is_control_close(line) && depth > 0) depth--
+        pend_buf = ""; pend_cnt = 0
+        next
+    }
+
+    # depth == 0.
+
+    if (is_region_trigger(line) || is_zsc_extend(line)) {
+        # Still squarely in region — discard buffered blanks and continue.
+        pend_buf = ""; pend_cnt = 0
+        next
+    }
+
+    if (is_control_open(line)) {
+        # Control structure starts at depth 0 inside the region.
+        # The buffered blanks are adjacent to Zscaler content → discard them.
+        pend_buf = ""; pend_cnt = 0
+        depth++
+        next
+    }
+
+    # ── "Other" line at depth 0 → end the organic region ────────────────────
+    # The region ends at the last actual Zscaler/control line, NOT at the
+    # pending blank lines (those belong to the user).
+    print "REGION " rstart " " (NR - 1 - pend_cnt) > "/dev/stderr"
+    in_region = 0
+
+    # Flush pending blanks back as user content.
+    if (pend_cnt > 0) {
+        printf "%s", pend_buf
+        pend_buf = ""; pend_cnt = 0
+    }
+
+    # Check if this "other" line itself opens a new region (handles TC6 where
+    # the old organic block ends exactly where the marker block begins).
+    if (is_marker_begin(line)) {
+        in_region = 1; in_marker = 1
+        rstart = NR; pend_buf = ""; pend_cnt = 0
+        next
+    }
+    if (is_region_trigger(line)) {
+        in_region = 1; in_marker = 0
+        rstart = NR; pend_buf = ""; pend_cnt = 0
+        next
+    }
+
+    # Regular "other" line — update depth and emit.
+    if (is_control_open(line))                    depth++
+    else if (is_control_close(line) && depth > 0) depth--
+    print line
+}
+
+# ── EOF handler ──────────────────────────────────────────────────────────────
+
+END {
+    if (in_region) {
+        # Region that extended to end-of-file (no trailing "other" line).
+        print "REGION " rstart " " NR > "/dev/stderr"
+    } else if (pend_cnt > 0) {
+        # Trailing blank lines that were buffered but never flushed
+        # (shouldn't arise in normal flow, but emit them to be safe).
+        printf "%s", pend_buf
     }
 }
