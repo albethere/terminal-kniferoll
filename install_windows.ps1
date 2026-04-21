@@ -759,6 +759,143 @@ if ($Script:ZscPem) {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ZSCALER — RC/PROFILE SWEEP (PS equivalent of lib/rc_sweep.sh)
+#
+# Strips old Zscaler blocks from PS profile files using a line-by-line
+# state machine. Trigger patterns mirror the AWK parser in lib/rc_sweep.sh.
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Strip-ZscalerRegionsPS {
+    # Returns the file content with all Zscaler regions removed (as a string).
+    # Handles: BEGIN/END marker blocks, old $ZSC_PEM= assignment blocks.
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return '' }
+    $lines = [System.IO.File]::ReadAllLines($FilePath)
+    $out = [System.Collections.Generic.List[string]]::new()
+    $inRegion = $false
+    $inBeginEnd = $false
+
+    foreach ($line in $lines) {
+        # BEGIN/END marker block: consume from BEGIN to END inclusive
+        if ($line -match '# BEGIN terminal-kniferoll zscaler') {
+            $inRegion   = $true
+            $inBeginEnd = $true
+            continue
+        }
+        if ($inBeginEnd -and $line -match '# END terminal-kniferoll zscaler') {
+            $inRegion   = $false
+            $inBeginEnd = $false
+            continue
+        }
+        if ($inBeginEnd) { continue }
+
+        # Old assignment-style triggers (not inside BEGIN/END)
+        $isTrigger = (
+            $line -match '^\s*\$ZSC_PEM_WIN\s*='     -or
+            $line -match '^\s*\$ZSC_PEM_MAC\s*='     -or
+            $line -match '^\s*\$ZSC_PEM_LINUX\s*='   -or
+            $line -match '^\s*\$ZSC_PEM\s*='         -or
+            $line -match '^\s*\$env:ZSC_PEM\s*='     -or
+            $line -match '^\s*\$Script:ZscPem\s*=\s*\$null'
+        )
+        if (-not $inRegion -and $isTrigger) {
+            $inRegion = $true
+            continue
+        }
+
+        if ($inRegion) {
+            $isZscalerContent = (
+                $line -match 'ZSC_PEM|ZscPem'         -or
+                $line -match 'CURL_CA_BUNDLE'          -or
+                $line -match 'SSL_CERT_FILE'           -or
+                $line -match 'REQUESTS_CA_BUNDLE'      -or
+                $line -match 'NODE_EXTRA_CA_CERTS'     -or
+                $line -match 'GIT_SSL_CAINFO'          -or
+                $line -match 'AWS_CA_BUNDLE'           -or
+                $line -match 'PIP_CERT'                -or
+                $line -match '[Zz]scaler'              -or
+                $line -match 'zscaler-env\.ps1'        -or
+                $line -match '__zkEnv'
+            )
+            $isStructural = (
+                $line -match '^\s*\}(\s*#.*)?$'       -or
+                $line -match '^\s*if\s'               -or
+                $line -match '^\s*foreach\s'          -or
+                $line -match '^\s*\)\s*\{(\s*#.*)?$'
+            )
+            if ($line -match '^\s*$') {
+                # blank — consume (trailing cleanup)
+            } elseif ($isZscalerContent) {
+                # eat
+            } elseif ($isStructural) {
+                # eat PS structural lines inside the region
+            } else {
+                $inRegion = $false
+                $out.Add($line) | Out-Null
+            }
+        } else {
+            $out.Add($line) | Out-Null
+        }
+    }
+    return ($out -join "`n")
+}
+
+function Upsert-ProfileZscalerBlock {
+    param([string]$ProfilePath)
+    if (-not (Test-Path $ProfilePath)) { return }
+
+    $markerBlock = @'
+
+# BEGIN terminal-kniferoll zscaler -- DO NOT EDIT (managed by installer)
+$__zkEnv = "$env:USERPROFILE\.config\terminal-kniferoll\zscaler-env.ps1"
+if (Test-Path $__zkEnv) { . $__zkEnv }
+Remove-Variable __zkEnv -ErrorAction SilentlyContinue
+# END terminal-kniferoll zscaler
+'@
+
+    $hasZscaler = (Get-Content $ProfilePath -Raw -ErrorAction SilentlyContinue) -match 'ZSC_PEM|CURL_CA_BUNDLE|terminal-kniferoll zscaler|zscaler-env\.ps1|__zkEnv'
+    $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $backup = "$ProfilePath.terminal-kniferoll-backup-$ts"
+    Copy-Item $ProfilePath $backup -Force
+    Write-Info "  backup: $backup"
+    # Prune: keep 5 most recent backups
+    $backups = Get-ChildItem "$ProfilePath.terminal-kniferoll-backup-*" -ErrorAction SilentlyContinue |
+               Sort-Object LastWriteTime -Descending | Select-Object -Skip 5
+    foreach ($b in $backups) { Remove-Item $b.FullName -Force -ErrorAction SilentlyContinue }
+
+    if ($hasZscaler) {
+        $stripped = Strip-ZscalerRegionsPS -FilePath $ProfilePath
+        $newContent = $stripped.TrimEnd() + $markerBlock + "`n"
+        Write-Info "  sweep: $ProfilePath (old Zscaler block stripped, new marker appended)"
+    } else {
+        $existing = [System.IO.File]::ReadAllText($ProfilePath)
+        $newContent = $existing.TrimEnd() + $markerBlock + "`n"
+        Write-Info "  sweep: $ProfilePath (marker block appended)"
+    }
+    $bom = New-Object System.Text.UTF8Encoding($true)
+    [System.IO.File]::WriteAllText($ProfilePath, $newContent, $bom)
+    Write-OK "$ProfilePath`: Zscaler marker block upserted"
+}
+
+function Invoke-ZscalerProfileSweep {
+    # Sweeps Zscaler blocks in all known PS profile paths (equivalent to
+    # sweep_rc_files in lib/rc_sweep.sh). Skips paths that don't exist.
+    Write-Section "ZSCALER PROFILE SWEEP"
+    $targets = @(
+        $PROFILE,
+        (Join-Path $env:USERPROFILE 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'),
+        (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+    if ($targets.Count -eq 0) {
+        Write-Info "No existing PS profile files found — sweep skipped"
+        return
+    }
+    foreach ($t in $targets) {
+        Upsert-ProfileZscalerBlock -ProfilePath $t
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ZSCALER — DIAGNOSTIC STATUS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2121,6 +2258,7 @@ Test-Prerequisites          # gates + auto-install PS 7 + (possibly) relaunch
 Initialize-PackageManagers  # Scoop + Choco + gum
 Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Write-ZscalerEnvFile        # write env file with Windows-specific detection paths
+Invoke-ZscalerProfileSweep # sweep old Zscaler blocks from existing PS profiles
 Start-LogViewerWindow       # spawn the cyberwave-bordered live log window
 Resolve-InstallMode         # gum-based picker (now available)
 

@@ -119,62 +119,6 @@ ENVEOF
     ok "~/.config/terminal-kniferoll/zscaler-env.sh written (Linux)"
 }
 
-# ── Source-line block content ─────────────────────────────────────────────────
-_zscaler_source_block() {
-    cat << 'SRCEOF'
-# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)
-[ -r "$HOME/.config/terminal-kniferoll/zscaler-env.sh" ] && \
-    . "$HOME/.config/terminal-kniferoll/zscaler-env.sh"
-# END terminal-kniferoll zscaler
-SRCEOF
-}
-
-# ── Upsert Zscaler source-line block in one rc file ───────────────────────────
-upsert_rc_zscaler_block() {
-    local rc="$1"
-    [[ ! -f "$rc" ]] && return 0
-    local MBEGIN="# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)"
-    local MEND="# END terminal-kniferoll zscaler"
-    local _blk; _blk="$(mktemp)"
-    _zscaler_source_block > "$_blk"
-    local _tmp; _tmp="$(mktemp)"
-    chmod 600 "$_tmp"
-    if grep -Fq "$MBEGIN" "$rc"; then
-        awk -v m="$MBEGIN" '$0==m{exit} {print}' "$rc" > "$_tmp"
-        cat "$_blk" >> "$_tmp"
-        awk -v m="$MEND" 'found{print} $0==m{found=1}' "$rc" >> "$_tmp"
-        mv -f "$_tmp" "$rc"
-        ok "$rc: Zscaler source block refreshed"
-    elif grep -Eq 'ZSC_PEM|CURL_CA_BUNDLE|terminal-kniferoll zscaler' "$rc" 2>/dev/null; then
-        # Stale multi-line Zscaler block without markers — cannot safely strip
-        # (line-by-line removal leaves orphaned if/for/done/fi). Append the new
-        # source block instead; it runs last and overrides any stale exports.
-        warn "$rc: stale Zscaler lines found without markers — appending source block (stale lines overridden at runtime)"
-        { cat "$rc"; echo; cat "$_blk"; } > "$_tmp"
-        mv -f "$_tmp" "$rc"
-        ok "$rc: Zscaler source block appended"
-    else
-        { cat "$rc"; echo; cat "$_blk"; } > "$_tmp"
-        mv -f "$_tmp" "$rc"
-        ok "$rc: Zscaler source block appended"
-    fi
-    rm -f "$_blk"
-}
-
-# ── Sweep all existing shell rc files (Linux) ─────────────────────────────────
-sweep_rc_files() {
-    local _rc
-    for _rc in \
-        "$HOME/.zshrc" \
-        "$HOME/.zprofile" \
-        "$HOME/.bashrc" \
-        "$HOME/.bash_profile" \
-        "$HOME/.profile"
-    do
-        [[ -f "$_rc" ]] && upsert_rc_zscaler_block "$_rc"
-    done
-    unset _rc
-}
 
 # ── Helper: yes/no prompt ────────────────────────────────────────────────────
 ask_yes_no() {
@@ -690,6 +634,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Supply chain guard ────────────────────────────────────────────────────────
 # shellcheck source=lib/supply_chain_guard.sh
 source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
+
+# shellcheck source=lib/rc_sweep.sh
+source "$SCRIPT_DIR/lib/rc_sweep.sh"
 
 # ── Split-terminal UI (tk-022) ────────────────────────────────────────────────
 # shellcheck source=lib/split_terminal.sh
