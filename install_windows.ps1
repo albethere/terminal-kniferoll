@@ -73,7 +73,8 @@ param(
     [switch]$NoRelaunch,
     [switch]$NoLogViewer,
     [Alias('h')]
-    [switch]$Help
+    [switch]$Help,
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version 3.0
@@ -113,6 +114,7 @@ $Script:LogFile = "$LogDir\install_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $Script:FailedTools = New-Object System.Collections.Generic.List[string]
+$script:ZSC_BUNDLE = $null
 
 function Write-Log {
     param(
@@ -129,6 +131,8 @@ function Write-Info { param([string]$m) Write-Host "[*] $m" -ForegroundColor Cya
 function Write-Warn { param([string]$m) Write-Host "[!] $m" -ForegroundColor Yellow; Write-Log WARN  $m }
 function Write-Err  { param([string]$m) Write-Host "[x] $m" -ForegroundColor Red;    Write-Log ERROR $m }
 function Write-Die  { param([string]$m) Write-Err "FATAL: $m"; exit 1 }
+function Write-Skip { param([string]$m) Write-Host "[.] skip: $m"      -ForegroundColor DarkGray;  Write-Log INFO "skip: $m" }
+function Write-Dry  { param([string]$m) Write-Host "[~] dry-run: $m"   -ForegroundColor Magenta;   Write-Log INFO "DRY-RUN: $m" }
 
 function Write-Section {
     param([string]$Title)
@@ -372,6 +376,524 @@ function Invoke-Elevated {
 }
 
 # =============================================================================
+# =============================================================================
+# ZSCALER MANAGED-DEVICE SUPPORT
+# =============================================================================
+
+# The re-preflight after trust setup works because Import-Certificate has already
+# added the Zscaler root to Cert:\CurrentUser\Root (or LocalMachine\Root), so
+# .NET's HttpClient (which backs Invoke-WebRequest) now trusts it.
+function Invoke-ZscalerPreflight {
+    param()
+
+    $probeUrl = 'https://registry.npmjs.org/'
+
+    try {
+        $oldPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Stop'
+
+        $iwrArgs = @{
+            Uri             = $probeUrl
+            Method          = 'HEAD'
+            UseBasicParsing = $true
+            TimeoutSec      = 15
+            ErrorAction     = 'Stop'
+        }
+        # PowerShell 7+ supports -SkipCertificateCheck; we do NOT use it here
+        # because we want cert errors to surface as failures, not be swallowed.
+
+        $resp = Invoke-WebRequest @iwrArgs
+        $ErrorActionPreference = $oldPref
+
+        # Check response headers for Zscaler interception markers
+        $zscalerHeaderKeys = @('X-Zscaler-Client', 'X-Zscaler-Auth', 'X-ZS-Version')
+        foreach ($hdr in $zscalerHeaderKeys) {
+            if ($resp.Headers.ContainsKey($hdr)) {
+                Write-Warn "Zscaler header detected: $hdr = $($resp.Headers[$hdr])"
+                return $false
+            }
+        }
+        $serverHdr = if ($resp.Headers.ContainsKey('Server')) { $resp.Headers['Server'] } else { '' }
+        if ($serverHdr -match 'zscaler') {
+            Write-Warn "Zscaler Server header detected: $serverHdr"
+            return $false
+        }
+
+        # Check body for Zscaler block page signatures
+        if ($resp.Content -match '(?i)(zscaler|your request was blocked|threat protection)') {
+            Write-Warn "Zscaler block-page content detected in preflight response"
+            return $false
+        }
+
+        return $true
+
+    } catch [System.Net.WebException] {
+        $ErrorActionPreference = $oldPref
+        $msg = $_.Exception.Message
+        # SSL/TLS trust failure — Zscaler MITM without root cert trusted
+        if ($msg -match '(?i)(ssl|tls|certificate|trust|security|handshake|remote certificate)') {
+            Write-Warn "Preflight TLS error (likely Zscaler MITM): $msg"
+            return $false
+        }
+        # Zscaler block page via HTTP 4xx/5xx with zscaler body
+        if ($_.Exception.Response) {
+            try {
+                $stream = $_.Exception.Response.GetResponseStream()
+                $reader = [System.IO.StreamReader]::new($stream)
+                $body   = $reader.ReadToEnd()
+                $reader.Close()
+                if ($body -match '(?i)(zscaler|your request was blocked|threat protection)') {
+                    Write-Warn "Zscaler block page detected in error response body"
+                    return $false
+                }
+            } catch { <# ignore secondary read failure #> }
+        }
+        # Other network error — not necessarily Zscaler
+        Write-Warn "Preflight connectivity warning: $msg"
+        return $false
+    } catch {
+        $ErrorActionPreference = $oldPref
+        $msg = $_.Exception.Message
+        if ($msg -match '(?i)(ssl|tls|certificate|trust|security|handshake)') {
+            Write-Warn "Preflight TLS error: $msg"
+            return $false
+        }
+        Write-Warn "Preflight probe returned unexpected error: $msg"
+        return $false
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ZSCALER — CERT DETECTION + TRUST SETUP
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Detection order (Windows-only — no Unix paths in this script):
+#   1. Previously built combined bundle  (fast path on re-run)
+#   2. LM standard user path:
+#        C:\Users\<user>\.certificates\zscaler.pem
+#        (per LM Zscaler Developer Onboarding doc, Dec 2025)
+#   3. ProgramData Zscaler paths (ZIA/ZPA client writes cert here):
+#        C:\ProgramData\Zscaler\*
+#   4. Windows Cert Store export — filter by Zscaler issuer/subject on
+#        Cert:\LocalMachine\Root and Cert:\CurrentUser\Root
+#
+# Produces a combined PEM at:
+#   $env:USERPROFILE\.config\terminal-kniferoll\ca-bundle.pem
+# (mirrors macOS ~/.config/terminal-kniferoll/ca-bundle.pem convention)
+#
+# Sets script-scope $script:ZSC_BUNDLE so later functions can reference it.
+
+
+function Invoke-ZscalerTrustSetup {
+    Write-Section "MANAGED DEVICE SETUP — ZSCALER CERT TRUST"
+
+    $bundleDir    = "$env:USERPROFILE\.config\terminal-kniferoll"
+    $bundlePath   = "$bundleDir\ca-bundle.pem"
+    $userCertDir  = "$env:USERPROFILE\.certificates"
+
+    if ($DryRun) {
+        Write-Dry "Would detect Zscaler cert and build CA bundle at: $bundlePath"
+        Write-Dry "Would import cert into CurrentUser\Root (or LocalMachine\Root if admin)"
+        Write-Dry "Would set User-scope env vars: CURL_CA_BUNDLE, AWS_CA_BUNDLE, PIP_CERT, etc."
+        $script:ZSC_BUNDLE = '<DRY-RUN-PLACEHOLDER>'
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $bundleDir   | Out-Null
+    New-Item -ItemType Directory -Force -Path $userCertDir | Out-Null
+
+    # ── 1. Fast path — prior run already built the bundle ────────────────────
+    if (Test-Path $bundlePath) {
+        $bundleInfo = Get-Item $bundlePath
+        if ($bundleInfo.Length -gt 0) {
+            $script:ZSC_BUNDLE = $bundlePath
+            Set-ZscalerEnvVars -BundlePath $bundlePath
+            Write-OK "Zscaler trust: using cached CA bundle ($($bundleInfo.Length) bytes)"
+            return
+        }
+    }
+
+    # ── 2. LM standard user path (per LM onboarding doc) ────────────────────
+    $zscPem = $null
+    $lmStdPath = "$env:USERPROFILE\.certificates\zscaler.pem"
+    if (Test-Path $lmStdPath) {
+        $f = Get-Item $lmStdPath
+        if ($f.Length -gt 0) {
+            $zscPem = $lmStdPath
+            Write-Info "Zscaler cert found at LM standard path: $lmStdPath"
+        }
+    }
+
+    # ── 3. ProgramData Zscaler paths (ZIA/ZPA client) ────────────────────────
+    if (-not $zscPem) {
+        $zscCandidates = @(
+            'C:\ProgramData\Zscaler\ZscalerRootCertificate-2048-SHA256.crt',
+            'C:\ProgramData\Zscaler\ZscalerRootCertificate.crt',
+            'C:\ProgramData\Zscaler\ZscalerRootCertificate.pem'
+        )
+        # Also glob any .crt / .pem under C:\ProgramData\Zscaler\
+        if (Test-Path 'C:\ProgramData\Zscaler') {
+            $found = Get-ChildItem 'C:\ProgramData\Zscaler' -Filter '*.crt' -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -match 'zscaler' -or $_.DirectoryName -match 'zscaler' }
+            if ($found) { $zscCandidates = @($found[0].FullName) + $zscCandidates }
+        }
+        foreach ($c in $zscCandidates) {
+            if (Test-Path $c) {
+                $f = Get-Item $c
+                if ($f.Length -gt 0) {
+                    $zscPem = $c
+                    Write-Info "Zscaler cert found at ZIA/ZPA client path: $zscPem"
+                    break
+                }
+            }
+        }
+    }
+
+    # ── 4. Export from Windows Cert Store ────────────────────────────────────
+    $tempCertPath = $null    # hoisted so cleanup at function end can reach it
+    if (-not $zscPem) {
+        $storeLocations = @('LocalMachine', 'CurrentUser')
+        $tempCertPath   = Join-Path $env:TEMP "zscaler-export-$(Get-Random).pem"
+        $exported       = $false
+
+        foreach ($loc in $storeLocations) {
+            try {
+                $certs = Get-ChildItem "Cert:\$loc\Root" -ErrorAction Stop |
+                         Where-Object {
+                             ($_.Subject  -match '(?i)zscaler') -or
+                             ($_.Issuer   -match '(?i)zscaler') -or
+                             ($_.FriendlyName -match '(?i)zscaler')
+                         }
+                if ($certs) {
+                    $sb = [System.Text.StringBuilder]::new()
+                    foreach ($cert in $certs) {
+                        $b64 = [Convert]::ToBase64String($cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert), 'InsertLineBreaks')
+                        [void]$sb.AppendLine("-----BEGIN CERTIFICATE-----")
+                        [void]$sb.AppendLine($b64)
+                        [void]$sb.AppendLine("-----END CERTIFICATE-----")
+                    }
+                    [System.IO.File]::WriteAllText($tempCertPath, $sb.ToString())
+                    $zscPem  = $tempCertPath
+                    $exported = $true
+                    Write-Info "Zscaler cert(s) exported from Cert:\$loc\Root ($($certs.Count) cert(s))"
+                    break
+                }
+            } catch {
+                Write-Warn "Could not read Cert:\$loc\Root — $($_.Exception.Message)"
+            }
+        }
+
+        if (-not $exported) {
+            Write-Skip "No Zscaler cert detected in Cert Store"
+        }
+    }
+
+    # ── If no cert found at all, skip and assume non-managed device ──────────
+    if (-not $zscPem) {
+        Write-Skip "No Zscaler cert detected — assuming standard TLS (non-managed device)"
+        return
+    }
+
+    # ── Import into Windows Cert Store ────────────────────────────────────────
+    # Use Import-Certificate (native, idempotent on same thumbprint) rather than certutil.
+    $importStore    = if ($Script:IsAdmin) { 'LocalMachine' } else { 'CurrentUser' }
+    $tempImportFile = $null
+    try {
+        # Import-Certificate needs a .cer/.crt file, not a multi-cert PEM.
+        # If source is PEM, extract the first cert block into a temp .cer.
+        $importSource = $zscPem
+        if ($zscPem -match '\.pem$') {
+            $pemContent = Get-Content "$zscPem" -Raw
+            if ($pemContent -match '(?s)-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----') {
+                $b64   = $Matches[1] -replace '\s',''
+                $bytes = [Convert]::FromBase64String($b64)
+                $tempImportFile = Join-Path $env:TEMP "zscaler-import-$(Get-Random).cer"
+                [System.IO.File]::WriteAllBytes($tempImportFile, $bytes)
+                $importSource = $tempImportFile
+            }
+        }
+        Import-Certificate -FilePath "$importSource" -CertStoreLocation "Cert:\$importStore\Root" `
+            -ErrorAction Stop | Out-Null
+        Write-OK "Zscaler cert imported into Cert:\$importStore\Root"
+    } catch {
+        Write-Warn "Cert store import failed ($importStore): $($_.Exception.Message) — continuing with PEM bundle only"
+    } finally {
+        # Clean up temp .cer file — do not leave cert material in %TEMP%
+        if ($null -ne $tempImportFile -and (Test-Path "$tempImportFile")) {
+            Remove-Item "$tempImportFile" -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # ── Build combined PEM bundle ─────────────────────────────────────────────
+    # Combined = all trusted root CAs from CurrentUser\Root + LocalMachine\Root
+    # + the Zscaler cert itself, so tools that need a PEM file have one source.
+    Write-Info "Building combined CA bundle at: $bundlePath"
+    $sb = [System.Text.StringBuilder]::new()
+
+    foreach ($storeLocation in @('LocalMachine', 'CurrentUser')) {
+        try {
+            $storeCerts = Get-ChildItem "Cert:\$storeLocation\Root" -ErrorAction SilentlyContinue
+            foreach ($cert in $storeCerts) {
+                try {
+                    $b64 = [Convert]::ToBase64String(
+                        $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert),
+                        'InsertLineBreaks'
+                    )
+                    [void]$sb.AppendLine("# Subject: $($cert.Subject)")
+                    [void]$sb.AppendLine("-----BEGIN CERTIFICATE-----")
+                    [void]$sb.AppendLine($b64)
+                    [void]$sb.AppendLine("-----END CERTIFICATE-----")
+                } catch { <# skip individual cert export failures #> }
+            }
+        } catch {
+            Write-Warn "Could not export from Cert:\$storeLocation\Root: $($_.Exception.Message)"
+        }
+    }
+
+    # Append the Zscaler PEM (in case it wasn't in the store yet)
+    $zscContent = Get-Content $zscPem -Raw -ErrorAction SilentlyContinue
+    if ($zscContent) {
+        [void]$sb.AppendLine("# Zscaler Root CA (from: $zscPem)")
+        [void]$sb.Append($zscContent)
+    }
+
+    [System.IO.File]::WriteAllText($bundlePath, $sb.ToString(), [System.Text.Encoding]::UTF8)
+    Write-OK "CA bundle written — $([System.IO.FileInfo]::new($bundlePath).Length) bytes"
+
+    # Also write the PEM to the LM standard location for tool commands that
+    # reference it directly (git sslCAInfo, etc.)
+    $lmCrtPath = "$userCertDir\zscaler.crt"
+    $lmPemPath = "$userCertDir\zscaler.pem"
+    if (-not (Test-Path $lmPemPath) -or (Get-Item $lmPemPath).Length -eq 0) {
+        Copy-Item $bundlePath $lmPemPath -Force
+        Copy-Item $bundlePath $lmCrtPath -Force
+        Write-OK "Zscaler PEM/CRT written to $userCertDir"
+    }
+
+    $script:ZSC_BUNDLE = $bundlePath
+    Set-ZscalerEnvVars -BundlePath $bundlePath
+    $lineCount = (Get-Content "$bundlePath" | Measure-Object -Line).Lines
+    Write-OK "Zscaler trust configured — $lineCount cert lines in bundle"
+
+    # Clean up the Cert Store export temp file — do not leave cert material in %TEMP%
+    if ($null -ne $tempCertPath -and (Test-Path "$tempCertPath")) {
+        Remove-Item "$tempCertPath" -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ZSCALER — SET ENV VARS (current session + persistent User scope)
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Set-ZscalerEnvVars {
+    param([string]$BundlePath)
+
+    if ($DryRun) {
+        Write-Dry "Would set User env vars: CURL_CA_BUNDLE, AWS_CA_BUNDLE, PIP_CERT, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, GIT_SSL_CAINFO = $BundlePath"
+        return
+    }
+
+    $vars = @{
+        CURL_CA_BUNDLE      = $BundlePath
+        AWS_CA_BUNDLE       = $BundlePath
+        PIP_CERT            = $BundlePath
+        NODE_EXTRA_CA_CERTS = $BundlePath
+        REQUESTS_CA_BUNDLE  = $BundlePath
+        SSL_CERT_FILE       = $BundlePath
+        GIT_SSL_CAINFO      = $BundlePath
+    }
+    # HOMEBREW_CURLOPT_CACERT is macOS-only — explicitly excluded
+
+    foreach ($pair in $vars.GetEnumerator()) {
+        # Set in current session
+        [System.Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'Process')
+        # Persist for future shell sessions
+        [System.Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
+    }
+
+    Write-OK "Zscaler env vars set (Process + User scope): CURL_CA_BUNDLE, AWS_CA_BUNDLE, PIP_CERT, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, GIT_SSL_CAINFO"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ZSCALER — PER-TOOL CERT CONFIGURATION
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Per LM Zscaler Developer Onboarding doc (HES, Dec 2025) Windows commands.
+# Called AFTER tools are installed so the config commands exist.
+
+function Invoke-ZscalerToolConfig {
+    if (-not $script:ZSC_BUNDLE) { return }
+    if ($DryRun) {
+        Write-Dry "Would configure: git http.sslCAInfo, npm cafile, yarn cafile+strict-ssl, pip global.cert, aws ca_bundle (default+saml), keytool cacerts"
+        return
+    }
+
+    Write-Section "ZSCALER CERT TRUST — TOOL CONFIGURATION"
+
+    $bundle = $script:ZSC_BUNDLE
+    # Per LM doc, Windows paths use .crt for most tools and .pem for git/pip
+    $userCertDir = "$env:USERPROFILE\.certificates"
+    $crtPath     = if (Test-Path "$userCertDir\zscaler.crt") { "$userCertDir\zscaler.crt" } else { $bundle }
+    $pemPath     = if (Test-Path "$userCertDir\zscaler.pem") { "$userCertDir\zscaler.pem" } else { $bundle }
+
+    # git — http.sslCAInfo (per LM doc: .pem for git)
+    if (Test-Cmd 'git') {
+        Invoke-Optional "git: trusting Zscaler CA (http.sslCAInfo)" {
+            git config --global http.sslCAInfo "$pemPath"
+        }
+    }
+
+    # npm — npm config -g set cafile + strict-ssl true (per LM doc: .crt, global flag)
+    if (Test-Cmd 'npm') {
+        Invoke-Optional "npm: trusting Zscaler CA (cafile, global)" {
+            npm config -g set cafile "$crtPath"
+        }
+        Invoke-Optional "npm: strict-ssl true" {
+            npm config -g set strict-ssl true
+        }
+    }
+
+    # yarn — strict-ssl first, then cafile (per LM doc)
+    if (Test-Cmd 'yarn') {
+        Invoke-Optional "yarn: enabling strict-ssl" {
+            yarn config set strict-ssl true
+        }
+        Invoke-Optional "yarn: trusting Zscaler CA (cafile)" {
+            yarn config set cafile "$crtPath"
+        }
+    }
+
+    # pip / pip3 — pip config set global.cert (per LM doc: .pem for pip)
+    if (Test-Cmd 'pip') {
+        Invoke-Optional "pip: trusting Zscaler CA (global.cert)" {
+            pip config set global.cert "$pemPath" 2>&1 | Out-Null
+        }
+    }
+    if (Test-Cmd 'pip3') {
+        Invoke-Optional "pip3: trusting Zscaler CA (global.cert)" {
+            pip3 config set global.cert "$pemPath" 2>&1 | Out-Null
+        }
+    }
+
+    # AWS CLI — default profile + saml profile (per LM doc: .crt)
+    if (Test-Cmd 'aws') {
+        Invoke-Optional "aws: trusting Zscaler CA (default profile)" {
+            aws configure set ca_bundle "$crtPath"
+        }
+        Invoke-Optional "aws: trusting Zscaler CA (saml profile)" {
+            aws --profile saml configure set ca_bundle "$crtPath" 2>&1 | Out-Null
+        }
+    }
+
+    # Java — keytool -import into $JAVA_HOME cacerts (per LM doc, Windows admin req)
+    # Idempotent: skip if alias already present.
+    $javaHome = $env:JAVA_HOME
+    if (-not $javaHome -and (Test-Cmd 'java')) {
+        $javaExe = (Get-Command 'java' -ErrorAction SilentlyContinue).Source
+        if ($javaExe) {
+            $javaHome = Split-Path (Split-Path $javaExe -Parent) -Parent
+        }
+    }
+    if ($javaHome -and (Test-Path $javaHome) -and (Test-Cmd 'keytool')) {
+        # Try both modern ($JAVA_HOME\lib\security\cacerts) and legacy JRE path
+        $cacertsPath = Join-Path $javaHome 'lib\security\cacerts'
+        if (-not (Test-Path $cacertsPath)) {
+            $cacertsPath = Join-Path $javaHome 'jre\lib\security\cacerts'
+        }
+        if (Test-Path $cacertsPath) {
+            $aliasExists = $false
+            try {
+                $null  = & keytool -list  -alias 'Zscaler' -keystore "$cacertsPath" -storepass 'changeit' 2>&1
+                $aliasExists = ($LASTEXITCODE -eq 0)
+            } catch { }
+
+            if ($aliasExists) {
+                Write-Skip "Java keystore: Zscaler CA already imported (alias 'Zscaler')"
+            } else {
+                Invoke-Optional "Java keystore: importing Zscaler CA into $cacertsPath" {
+                    & keytool -import -noprompt -alias 'Zscaler' `
+                        -keystore "$cacertsPath" -storepass 'changeit' `
+                        -file "$crtPath"
+                }
+            }
+        } else {
+            Write-Skip "Java keystore: cacerts not found under JAVA_HOME=$javaHome"
+        }
+    }
+
+    Write-OK "Tool cert configuration complete"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ZSCALER — HARD GATE: PREFLIGHT → TRUST SETUP → RE-VALIDATE → PROCEED
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Invoke-ZscalerHardGate {
+    Write-Section "MANAGED DEVICE PREFLIGHT CHECK"
+
+    if ($DryRun) {
+        Write-Dry "Would probe https://registry.npmjs.org/ for Zscaler TLS interception"
+        Write-Dry "Would run trust setup if needed, then re-validate"
+        Invoke-ZscalerTrustSetup
+        return
+    }
+
+    Write-Info "Probing HTTPS connectivity (npm registry)..."
+    $preflightOk = Invoke-ZscalerPreflight
+
+    if ($preflightOk) {
+        Write-OK "HTTPS preflight passed — no Zscaler TLS interception detected"
+        # Still run trust setup in case cert is present for tool config purposes
+        Invoke-ZscalerTrustSetup
+        return
+    }
+
+    Write-Warn "HTTPS preflight failed — attempting Zscaler trust setup..."
+    Invoke-ZscalerTrustSetup
+
+    if (-not $script:ZSC_BUNDLE) {
+        Write-Die @"
+HTTPS preflight failed and no Zscaler cert was found to fix it.
+
+This device appears to be behind Zscaler TLS interception but no certificate
+was detected in standard locations:
+  - $env:USERPROFILE\.certificates\zscaler.pem
+  - C:\ProgramData\Zscaler\
+  - Cert:\LocalMachine\Root  (Zscaler-issued)
+  - Cert:\CurrentUser\Root   (Zscaler-issued)
+
+Follow the LM Zscaler Developer Onboarding guide to obtain the certificate,
+place it at $env:USERPROFILE\.certificates\zscaler.pem, then re-run this script.
+"@
+    }
+
+    # Re-validate: the Zscaler cert was imported into the Windows Cert Store above,
+    # so .NET's HttpClient (backing Invoke-WebRequest) will now trust it.
+    Write-Info "Re-validating HTTPS connectivity after trust setup..."
+    $postFlightOk = Invoke-ZscalerPreflight
+
+    if (-not $postFlightOk) {
+        Write-Die @"
+HTTPS preflight still failing after Zscaler trust setup.
+
+The CA bundle was written to: $script:ZSC_BUNDLE
+But the npm registry probe still fails. Possible causes:
+  - The Zscaler certificate found is not the correct root CA for this network
+  - A proxy is misconfigured (remove any proxy references per the LM onboarding doc)
+  - Network connectivity issue unrelated to certificates
+
+Please verify your Zscaler certificate and network configuration.
+"@
+    }
+
+    Write-OK "HTTPS connectivity restored after Zscaler trust setup"
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PACKAGE MANAGER BOOTSTRAP
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 # RESUME / RELAUNCH SUPPORT
 #
 # When this script installs PowerShell 7 from a PS 5.1 session, we want to
@@ -1457,12 +1979,15 @@ function Resolve-Custom {
 
 Test-Prerequisites          # gates + auto-install PS 7 + (possibly) relaunch
 Initialize-PackageManagers  # Scoop + Choco + gum
+Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Start-LogViewerWindow       # spawn the cyberwave-bordered live log window
 Resolve-InstallMode         # gum-based picker (now available)
 
 if ($Script:DoShell)     { Install-ShellExperience }
 if ($Script:DoProjector) { Install-Projector }
 if ($Script:DoAI)        { Install-AITools }
+
+Invoke-ZscalerToolConfig    # per-tool cert config after tools are installed (git, npm, pip, aws, keytool)
 
 # =============================================================================
 # DONE
