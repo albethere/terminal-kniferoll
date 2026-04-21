@@ -45,52 +45,11 @@ if command -v pyenv &>/dev/null; then
 fi
 
 # --- ZSCALER PROXY CONFIG (CORP DEVICES ONLY) ---
-# Detection is platform-aware — macOS paths and Linux paths are kept separate.
-#
-# macOS (darwin): LM standard path first, then installer bundle, then Zscaler app
-#   - /Users/Shared/.certificates/zscaler.pem  ← LM onboarding doc standard
-#   - ~/.config/terminal-kniferoll/ca-bundle.pem ← built by installer
-#   - /Library/Application Support/Zscaler/…   ← ZIA/ZPA app default
-#
-# Linux: installer bundle first, then system cert directories
-#   - ~/.config/terminal-kniferoll/ca-bundle.pem
-#   - /etc/ssl/certs/zscaler.pem
-#   - /usr/local/share/ca-certificates/zscaler.pem
-#
-# If none found, no Zscaler env is set and standard system trust applies.
+# Detection logic lives in ~/.config/terminal-kniferoll/zscaler-env.sh,
+# written fresh on each installer run with OS-specific absolute paths.
 # BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)
-unset ZSC_PEM
-if [[ "$OSTYPE" == darwin* ]]; then
-    for _zsc_p in \
-        "/Users/Shared/.certificates/zscaler.pem" \
-        "$HOME/.config/terminal-kniferoll/ca-bundle.pem" \
-        "/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
-    do
-        [[ -s "$_zsc_p" ]] && { export ZSC_PEM="$_zsc_p"; break; }
-    done
-else
-    for _zsc_p in \
-        "$HOME/.config/terminal-kniferoll/ca-bundle.pem" \
-        "/etc/ssl/certs/zscaler.pem" \
-        "/usr/local/share/ca-certificates/zscaler.pem" \
-        "/usr/share/ca-certificates/zscaler.pem"
-    do
-        [[ -s "$_zsc_p" ]] && { export ZSC_PEM="$_zsc_p"; break; }
-    done
-fi
-unset _zsc_p
-
-if [[ -n "${ZSC_PEM:-}" ]]; then
-    export REQUESTS_CA_BUNDLE="$ZSC_PEM"
-    export CURL_CA_BUNDLE="$ZSC_PEM"
-    export NODE_EXTRA_CA_CERTS="$ZSC_PEM"
-    export SSL_CERT_FILE="$ZSC_PEM"
-    export GIT_SSL_CAINFO="$ZSC_PEM"
-    export AWS_CA_BUNDLE="$ZSC_PEM"
-    export PIP_CERT="$ZSC_PEM"
-    # HOMEBREW_CURLOPT_CACERT is macOS-only (brew uses this for its internal curl)
-    [[ "$OSTYPE" == darwin* ]] && export HOMEBREW_CURLOPT_CACERT="$ZSC_PEM"
-fi
+[ -r "$HOME/.config/terminal-kniferoll/zscaler-env.sh" ] && \
+    . "$HOME/.config/terminal-kniferoll/zscaler-env.sh"
 # END terminal-kniferoll zscaler
 
 # --- WTFIS API KEYS ---

@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/zscaler-status — Zscaler environment diagnostic
+#
+# Checks cert detection, env var derivation, TLS connectivity, and cert chain.
+# Exit 0: all checks pass. Exit 1: one or more checks failed.
+#
+# Usage:
+#   ./scripts/zscaler-status
+#   ./scripts/zscaler-status --no-network   (skip curl/openssl smoke tests)
+# =============================================================================
+
+set -uo pipefail
+
+# ── Color palette ─────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
+else
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
+fi
+
+pass()  { echo -e "${GREEN}  [PASS]${RESET} $*"; }
+fail()  { echo -e "${RED}  [FAIL]${RESET} $*"; FAILURES=$((FAILURES + 1)); }
+found() { echo -e "${GREEN}  [FOUND]${RESET} $*"; }
+miss()  { echo -e "${DIM}  [miss] ${RESET} $*"; }
+info()  { echo -e "${CYAN}  [info]${RESET} $*"; }
+head()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
+
+FAILURES=0
+NO_NETWORK=false
+[[ "${1:-}" == "--no-network" ]] && NO_NETWORK=true
+
+echo -e "${BOLD}${CYAN}=== terminal-kniferoll: Zscaler Status ===${RESET}"
+echo -e "${DIM}  $(uname -s)  $(date '+%Y-%m-%d %H:%M:%S')${RESET}"
+
+# ── 1. OS detection ───────────────────────────────────────────────────────────
+head "1. OS detection"
+OS="$(uname -s)"
+info "uname -s: $OS"
+
+# ── 2. Detection paths ────────────────────────────────────────────────────────
+head "2. Cert detection paths"
+RESOLVED_PEM=""
+
+if [[ "$OS" == "Darwin" ]]; then
+    DETECTION_PATHS=(
+        "/Users/Shared/.certificates/zscaler.pem"
+        "$HOME/.config/terminal-kniferoll/ca-bundle.pem"
+        "/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
+    )
+else
+    DETECTION_PATHS=(
+        "$HOME/.config/terminal-kniferoll/ca-bundle.pem"
+        "/etc/ssl/certs/zscaler.pem"
+        "/usr/local/share/ca-certificates/zscaler.pem"
+        "/usr/share/ca-certificates/zscaler.pem"
+    )
+fi
+
+for _p in "${DETECTION_PATHS[@]}"; do
+    if [[ -s "$_p" ]]; then
+        found "$_p"
+        [[ -z "$RESOLVED_PEM" ]] && RESOLVED_PEM="$_p"
+    else
+        miss "$_p"
+    fi
+done
+
+# ── 3. ZSC_PEM effective value ────────────────────────────────────────────────
+head "3. ZSC_PEM effective value"
+if [[ -n "$RESOLVED_PEM" ]]; then
+    info "Resolved from detection paths: $RESOLVED_PEM"
+else
+    info "No cert found in detection paths — checking env var"
+fi
+
+EFFECTIVE_PEM="${ZSC_PEM:-$RESOLVED_PEM}"
+if [[ -n "$EFFECTIVE_PEM" ]]; then
+    pass "ZSC_PEM = $EFFECTIVE_PEM"
+else
+    info "ZSC_PEM = (not set — non-managed device, no cert found)"
+fi
+
+# ── 4. Env vars ───────────────────────────────────────────────────────────────
+head "4. Exported env vars"
+ENV_VARS=(
+    CURL_CA_BUNDLE SSL_CERT_FILE REQUESTS_CA_BUNDLE
+    NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO AWS_CA_BUNDLE PIP_CERT
+)
+[[ "$OS" == "Darwin" ]] && ENV_VARS+=(HOMEBREW_CURLOPT_CACERT)
+
+all_vars_ok=true
+for _v in "${ENV_VARS[@]}"; do
+    val="${!_v:-}"
+    if [[ -n "$val" ]]; then
+        if [[ -n "$EFFECTIVE_PEM" && "$val" != "$EFFECTIVE_PEM" ]]; then
+            fail "$_v = $val  (MISMATCH — expected $EFFECTIVE_PEM)"
+            all_vars_ok=false
+        else
+            pass "$_v = $val"
+        fi
+    else
+        if [[ -n "$EFFECTIVE_PEM" ]]; then
+            fail "$_v = (not set — cert found but var missing; source the env file or re-run installer)"
+            all_vars_ok=false
+        else
+            info "$_v = (not set — no cert, expected on non-managed device)"
+        fi
+    fi
+done
+
+# ── 5. Env file ───────────────────────────────────────────────────────────────
+head "5. Installer-generated env file"
+ENV_FILE="$HOME/.config/terminal-kniferoll/zscaler-env.sh"
+if [[ -f "$ENV_FILE" ]]; then
+    pass "File exists: $ENV_FILE"
+    _ts="$(grep '^# Generated:' "$ENV_FILE" 2>/dev/null | head -1 || true)"
+    [[ -n "$_ts" ]] && info "$_ts"
+else
+    if [[ -n "$EFFECTIVE_PEM" ]]; then
+        fail "File missing: $ENV_FILE (run installer to generate)"
+    else
+        info "File not found: $ENV_FILE (expected — run installer to create)"
+    fi
+fi
+
+# ── 6. TLS smoke tests ────────────────────────────────────────────────────────
+head "6. TLS smoke tests"
+if [[ "$NO_NETWORK" == "true" ]]; then
+    info "Skipped (--no-network)"
+else
+    CURL_OPTS=(--proto '=https' --tlsv1.2 --max-time 15 -fsSL -o /dev/null)
+    [[ -n "$EFFECTIVE_PEM" && -f "$EFFECTIVE_PEM" ]] && \
+        CURL_OPTS+=(--cacert "$EFFECTIVE_PEM")
+
+    if curl "${CURL_OPTS[@]}" "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" 2>/dev/null; then
+        pass "curl: raw.githubusercontent.com reachable"
+    else
+        fail "curl: raw.githubusercontent.com failed (exit $?)"
+    fi
+
+    # openssl s_client cert chain
+    if command -v openssl &>/dev/null; then
+        CHAIN_OUT="$(echo "" | openssl s_client -connect github.com:443 -servername github.com \
+            ${EFFECTIVE_PEM:+-CAfile "$EFFECTIVE_PEM"} 2>/dev/null | \
+            openssl x509 -noout -issuer -subject 2>/dev/null || true)"
+        if [[ -n "$CHAIN_OUT" ]]; then
+            pass "openssl: github.com:443 cert chain OK"
+            echo -e "${DIM}    $CHAIN_OUT${RESET}"
+            if echo "$CHAIN_OUT" | grep -qi "zscaler"; then
+                info "Zscaler root visible in cert chain (managed device confirmed)"
+            fi
+        else
+            fail "openssl: could not read cert chain from github.com:443"
+        fi
+    else
+        info "openssl not found — skipping cert chain check"
+    fi
+fi
+
+# ── 7. Python TLS smoke test ─────────────────────────────────────────────────
+head "7. Python TLS"
+_py3="$(command -v python3 || command -v python || true)"
+if [[ -n "$_py3" ]]; then
+    if "$_py3" -c "import ssl; ssl.create_default_context().load_default_certs()" 2>/dev/null; then
+        pass "Python ssl.create_default_context() OK ($_py3)"
+    else
+        fail "Python ssl.create_default_context() failed ($_py3)"
+    fi
+else
+    info "python3 not found — skipping"
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}─────────────────────────────────────────────${RESET}"
+if [[ $FAILURES -eq 0 ]]; then
+    echo -e "${GREEN}${BOLD}  [OK] All checks passed.${RESET}"
+    echo ""
+    exit 0
+else
+    echo -e "${RED}${BOLD}  [FAIL] $FAILURES check(s) failed.${RESET}"
+    echo ""
+    echo -e "${YELLOW}  Remediation:${RESET}"
+    echo "    1. Place Zscaler cert at the LM standard path:"
+    if [[ "$OS" == "Darwin" ]]; then
+        echo "         /Users/Shared/.certificates/zscaler.pem"
+    else
+        echo "         /usr/local/share/ca-certificates/zscaler.pem"
+        echo "       then run: sudo update-ca-certificates"
+    fi
+    echo "    2. Re-run the installer to regenerate zscaler-env.sh"
+    echo "    3. Re-open your shell (or: source ~/.config/terminal-kniferoll/zscaler-env.sh)"
+    echo ""
+    exit 1
+fi
