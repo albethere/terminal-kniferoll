@@ -101,15 +101,16 @@ is_restricted_device() {
 
 # ── Zscaler managed-device cert trust ────────────────────────────────────────
 # Must be called BEFORE any curl/Homebrew operations on managed macOS devices.
-# Detects the Zscaler root CA, builds a combined CA bundle (system + Zscaler),
-# and sets CURL_CA_BUNDLE so all subsequent curl calls succeed behind Zscaler
-# TLS interception.
+# Builds a combined CA bundle (macOS system roots + Zscaler) and sets
+# CURL_CA_BUNDLE / HOMEBREW_CURLOPT_CACERT so brew bootstrap succeeds behind
+# Zscaler TLS interception.
 #
-# Detection order:
-#   1. Previously built combined bundle (fast path on re-run)
-#   2. Zscaler app default path (ZIA/ZPA client writes cert here)
-#   3. System Keychain export (MDM-enrolled devices without ZIA client)
-#   4. Linux/legacy explicit PEM paths
+# Detection order (macOS-only paths — no Linux paths in this script):
+#   1. Previously built combined bundle  (fast path on re-run)
+#   2. LM standard path: /Users/Shared/.certificates/zscaler.pem
+#      (Liberty Mutual Zscaler Developer Onboarding doc, Dec 2025)
+#   3. Zscaler app path  (ZIA/ZPA client may write cert here)
+#   4. System Keychain export  (MDM-enrolled device without Zscaler app)
 setup_zscaler_trust() {
     local zsc_pem=""
     local bundle_dir="$HOME/.config/terminal-kniferoll"
@@ -125,14 +126,22 @@ setup_zscaler_trust() {
         return 0
     fi
 
-    # 2. Zscaler client default path (Zscaler app installs cert here on macOS)
-    local _zsc_app="/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
-    if [[ -f "$_zsc_app" ]]; then
-        zsc_pem="$_zsc_app"
-        info "Zscaler cert found at Zscaler app path"
+    # 2. LM standard path — engineers place the cert here per LM onboarding doc
+    if [[ -s "/Users/Shared/.certificates/zscaler.pem" ]]; then
+        zsc_pem="/Users/Shared/.certificates/zscaler.pem"
+        info "Zscaler cert found at LM standard path (/Users/Shared/.certificates/)"
     fi
 
-    # 3. System Keychain export (MDM-enrolled without Zscaler app)
+    # 3. Zscaler app path (ZIA/ZPA client default on macOS)
+    if [[ -z "$zsc_pem" ]]; then
+        local _zsc_app="/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
+        if [[ -f "$_zsc_app" ]]; then
+            zsc_pem="$_zsc_app"
+            info "Zscaler cert found at Zscaler app path"
+        fi
+    fi
+
+    # 4. System Keychain export (MDM-enrolled without Zscaler app or manual cert)
     if [[ -z "$zsc_pem" ]]; then
         local _tmp_ks; _tmp_ks="$(mktemp /tmp/zscaler-ks-XXXXXX.pem)"
         chmod 600 "$_tmp_ks"
@@ -144,13 +153,6 @@ setup_zscaler_trust() {
         else
             rm -f "$_tmp_ks"
         fi
-    fi
-
-    # 4. Fallback: explicit PEM files (Linux / manually placed)
-    if [[ -z "$zsc_pem" ]]; then
-        for _p in "/etc/ssl/certs/zscaler.pem" "/usr/share/ca-certificates/zscaler.pem"; do
-            [[ -f "$_p" ]] && { zsc_pem="$_p"; break; }
-        done
     fi
 
     if [[ -z "$zsc_pem" ]]; then
@@ -177,36 +179,67 @@ setup_zscaler_trust() {
 }
 
 # ── Configure installed tools to trust the Zscaler CA ────────────────────────
+# Commands sourced from LM Zscaler Developer Onboarding doc (HES, Dec 2025).
 # Call this AFTER tools are installed so config commands exist.
 configure_tool_certs() {
     [[ -z "${ZSC_PEM:-}" ]] && return 0
     banner "ZSCALER CERT TRUST — TOOL CONFIGURATION"
 
+    # git — http.sslCAInfo
     is_installed "git" && \
         run_optional "git: trusting Zscaler CA" \
             git config --global http.sslCAInfo "$ZSC_PEM"
 
+    # npm — global config (-g flag per LM doc)
     is_installed "npm" && \
         run_optional "npm: trusting Zscaler CA" \
-            npm config set cafile "$ZSC_PEM"
+            npm config -g set cafile "$ZSC_PEM"
 
+    # yarn — strict-ssl first, then cafile (per LM doc)
     if is_installed "yarn"; then
+        run_optional "yarn: enabling strict-ssl" \
+            yarn config set strict-ssl true
         run_optional "yarn: trusting Zscaler CA" \
-            yarn config set cafile "$ZSC_PEM" 2>/dev/null || \
-        run_optional "yarn (v2+): trusting Zscaler CA" \
-            yarn config set httpsCaFilePath "$ZSC_PEM" 2>/dev/null || true
+            yarn config set cafile "$ZSC_PEM"
     fi
 
-    is_installed "aws" && \
-        run_optional "aws: trusting Zscaler CA" \
-            aws configure set default.ca_bundle "$ZSC_PEM"
+    # AWS CLI — default profile + saml profile (per LM doc)
+    if is_installed "aws"; then
+        run_optional "aws: trusting Zscaler CA (default profile)" \
+            aws configure set ca_bundle "$ZSC_PEM"
+        run_optional "aws: trusting Zscaler CA (saml profile)" \
+            aws --profile saml configure set ca_bundle "$ZSC_PEM" 2>/dev/null || true
+    fi
 
-    if is_installed "pip3" || is_installed "pip"; then
-        local _pip_conf="$HOME/Library/Application Support/pip/pip.conf"
-        mkdir -p "$(dirname "$_pip_conf")"
-        if ! grep -q "^cert" "$_pip_conf" 2>/dev/null; then
-            printf '[global]\ncert = %s\n' "$ZSC_PEM" >> "$_pip_conf"
-            ok "pip: Zscaler CA added to pip.conf"
+    # pip / pip3 — pip config set global.cert (per LM doc)
+    is_installed "pip" && \
+        run_optional "pip: trusting Zscaler CA" \
+            pip config set global.cert "$ZSC_PEM" 2>/dev/null || true
+    is_installed "pip3" && \
+        run_optional "pip3: trusting Zscaler CA" \
+            pip3 config set global.cert "$ZSC_PEM" 2>/dev/null || true
+
+    # Java keystore — keytool -import into $JAVA_HOME cacerts (per LM doc)
+    # Requires -noprompt to suppress interactive "Trust this certificate?" prompt
+    local _java_home=""
+    if [[ -n "${JAVA_HOME:-}" && -d "$JAVA_HOME" ]]; then
+        _java_home="$JAVA_HOME"
+    elif [[ -x /usr/libexec/java_home ]]; then
+        _java_home="$(/usr/libexec/java_home 2>/dev/null || true)"
+    fi
+    if [[ -n "$_java_home" ]] && is_installed "keytool"; then
+        local _cacerts="$_java_home/lib/security/cacerts"
+        [[ ! -f "$_cacerts" ]] && _cacerts="$_java_home/jre/lib/security/cacerts"
+        if [[ -f "$_cacerts" ]]; then
+            if keytool -list -alias "Zscaler" \
+                    -keystore "$_cacerts" -storepass "changeit" &>/dev/null 2>&1; then
+                skip "Java keystore: Zscaler CA already imported"
+            else
+                run_optional "Java keystore: importing Zscaler CA" \
+                    keytool -import -noprompt -alias "Zscaler" \
+                        -keystore "$_cacerts" -storepass "changeit" \
+                        -file "$ZSC_PEM"
+            fi
         fi
     fi
 

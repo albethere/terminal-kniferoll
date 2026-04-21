@@ -45,27 +45,39 @@ if command -v pyenv &>/dev/null; then
 fi
 
 # --- ZSCALER PROXY CONFIG (CORP DEVICES ONLY) ---
-# Detection order (macOS → Linux fallback):
-#   1. Installer-built combined bundle  (installer writes this on managed devices)
-#   2. Zscaler app default path         (ZIA/ZPA client installs cert here on macOS)
-#   3. Linux/manually placed PEM        (/etc/ssl/certs or /usr/share/ca-certificates)
+# Detection is platform-aware — macOS paths and Linux paths are kept separate.
+#
+# macOS (darwin): LM standard path first, then installer bundle, then Zscaler app
+#   - /Users/Shared/.certificates/zscaler.pem  ← LM onboarding doc standard
+#   - ~/.config/terminal-kniferoll/ca-bundle.pem ← built by installer
+#   - /Library/Application Support/Zscaler/…   ← ZIA/ZPA app default
+#
+# Linux: installer bundle first, then system cert directories
+#   - ~/.config/terminal-kniferoll/ca-bundle.pem
+#   - /etc/ssl/certs/zscaler.pem
+#   - /usr/local/share/ca-certificates/zscaler.pem
 #
 # If none found, no Zscaler env is set and standard system trust applies.
-_ZSC_BUNDLE="$HOME/.config/terminal-kniferoll/ca-bundle.pem"
-_ZSC_APP_CERT="/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
-_ZSC_LINUX_1="/etc/ssl/certs/zscaler.pem"
-_ZSC_LINUX_2="/usr/share/ca-certificates/zscaler.pem"
-
-if [[ -s "$_ZSC_BUNDLE" ]]; then
-    export ZSC_PEM="$_ZSC_BUNDLE"
-elif [[ -f "$_ZSC_APP_CERT" ]]; then
-    export ZSC_PEM="$_ZSC_APP_CERT"
-elif [[ -f "$_ZSC_LINUX_1" ]]; then
-    export ZSC_PEM="$_ZSC_LINUX_1"
-elif [[ -f "$_ZSC_LINUX_2" ]]; then
-    export ZSC_PEM="$_ZSC_LINUX_2"
+unset ZSC_PEM
+if [[ "$OSTYPE" == darwin* ]]; then
+    for _zsc_p in \
+        "/Users/Shared/.certificates/zscaler.pem" \
+        "$HOME/.config/terminal-kniferoll/ca-bundle.pem" \
+        "/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
+    do
+        [[ -s "$_zsc_p" ]] && { export ZSC_PEM="$_zsc_p"; break; }
+    done
+else
+    for _zsc_p in \
+        "$HOME/.config/terminal-kniferoll/ca-bundle.pem" \
+        "/etc/ssl/certs/zscaler.pem" \
+        "/usr/local/share/ca-certificates/zscaler.pem" \
+        "/usr/share/ca-certificates/zscaler.pem"
+    do
+        [[ -s "$_zsc_p" ]] && { export ZSC_PEM="$_zsc_p"; break; }
+    done
 fi
-unset _ZSC_BUNDLE _ZSC_APP_CERT _ZSC_LINUX_1 _ZSC_LINUX_2
+unset _zsc_p
 
 if [[ -n "${ZSC_PEM:-}" ]]; then
     export REQUESTS_CA_BUNDLE="$ZSC_PEM"
@@ -75,6 +87,8 @@ if [[ -n "${ZSC_PEM:-}" ]]; then
     export GIT_SSL_CAINFO="$ZSC_PEM"
     export AWS_CA_BUNDLE="$ZSC_PEM"
     export PIP_CERT="$ZSC_PEM"
+    # HOMEBREW_CURLOPT_CACERT is macOS-only (brew uses this for its internal curl)
+    [[ "$OSTYPE" == darwin* ]] && export HOMEBREW_CURLOPT_CACERT="$ZSC_PEM"
 fi
 
 # --- WTFIS API KEYS ---
