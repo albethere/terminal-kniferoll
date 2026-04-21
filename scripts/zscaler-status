@@ -8,6 +8,7 @@
 # Usage:
 #   ./scripts/zscaler-status
 #   ./scripts/zscaler-status --no-network   (skip curl/openssl smoke tests)
+#   ./scripts/zscaler-status --self-test    (run scripts/test-sweep.sh and exit)
 # =============================================================================
 
 set -uo pipefail
@@ -29,6 +30,13 @@ head()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
 
 FAILURES=0
 NO_NETWORK=false
+
+# ── --self-test: delegate to the sweep test suite and exit ───────────────────
+if [[ "${1:-}" == "--self-test" ]]; then
+    _ST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    exec bash "$_ST_DIR/test-sweep.sh"
+fi
+
 [[ "${1:-}" == "--no-network" ]] && NO_NETWORK=true
 
 echo -e "${BOLD}${CYAN}=== terminal-kniferoll: Zscaler Status ===${RESET}"
