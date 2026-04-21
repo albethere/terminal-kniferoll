@@ -1,0 +1,9 @@
+# Compiled TUI binaries (built by installer on target machine)
+tui/selector/selector
+tui/selector/selector.exe
+
+# Installer logs
+.terminal-kniferoll/
+
+# macOS
+.DS_Store

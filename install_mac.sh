@@ -56,6 +56,7 @@ run_optional() {
 }
 
 # ── Helper: download URL to a secure temp file ───────────────────────────────
+# Respects CURL_CA_BUNDLE if set (Zscaler managed-device mode).
 download_to_tmp() {
     local url="$1" pattern="$2" tmp_file old_umask
     old_umask="$(umask)"
@@ -63,7 +64,10 @@ download_to_tmp() {
     tmp_file="$(mktemp "/tmp/${pattern}")"
     umask "$old_umask"
     chmod 600 "$tmp_file"
-    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp_file"
+    local curl_opts=(--proto '=https' --tlsv1.2 -fsSL)
+    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+        curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+    curl "${curl_opts[@]}" "$url" -o "$tmp_file"
     echo "$tmp_file"
 }
 
@@ -84,6 +88,130 @@ ask_yes_no() {
 
 # ── Helper: check if binary is on PATH ───────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
+
+# ── Helper: check if macOS .app is installed ─────────────────────────────────
+is_app_installed() {
+    [[ -d "/Applications/$1.app" ]] || [[ -d "$HOME/Applications/$1.app" ]]
+}
+
+# ── Helper: detect MDM-managed / restricted device ───────────────────────────
+is_restricted_device() {
+    profiles status -type enrollment 2>/dev/null | grep -qi "yes"
+}
+
+# ── Zscaler managed-device cert trust ────────────────────────────────────────
+# Must be called BEFORE any curl/Homebrew operations on managed macOS devices.
+# Detects the Zscaler root CA, builds a combined CA bundle (system + Zscaler),
+# and sets CURL_CA_BUNDLE so all subsequent curl calls succeed behind Zscaler
+# TLS interception.
+#
+# Detection order:
+#   1. Previously built combined bundle (fast path on re-run)
+#   2. Zscaler app default path (ZIA/ZPA client writes cert here)
+#   3. System Keychain export (MDM-enrolled devices without ZIA client)
+#   4. Linux/legacy explicit PEM paths
+setup_zscaler_trust() {
+    local zsc_pem=""
+    local bundle_dir="$HOME/.config/terminal-kniferoll"
+    local combined_bundle="$bundle_dir/ca-bundle.pem"
+    mkdir -p "$bundle_dir"
+
+    # 1. Fast path — prior installer run already built the bundle
+    if [[ -s "$combined_bundle" ]]; then
+        export CURL_CA_BUNDLE="$combined_bundle"
+        export HOMEBREW_CURLOPT_CACERT="$combined_bundle"
+        export ZSC_PEM="$combined_bundle"
+        ok "Zscaler trust: using cached CA bundle"
+        return 0
+    fi
+
+    # 2. Zscaler client default path (Zscaler app installs cert here on macOS)
+    local _zsc_app="/Library/Application Support/Zscaler/ZscalerRootCertificate-2048-SHA256.crt"
+    if [[ -f "$_zsc_app" ]]; then
+        zsc_pem="$_zsc_app"
+        info "Zscaler cert found at Zscaler app path"
+    fi
+
+    # 3. System Keychain export (MDM-enrolled without Zscaler app)
+    if [[ -z "$zsc_pem" ]]; then
+        local _tmp_ks; _tmp_ks="$(mktemp /tmp/zscaler-ks-XXXXXX.pem)"
+        chmod 600 "$_tmp_ks"
+        if security find-certificate -c "Zscaler" -a -p \
+                /Library/Keychains/System.keychain > "$_tmp_ks" 2>/dev/null \
+                && [[ -s "$_tmp_ks" ]]; then
+            zsc_pem="$_tmp_ks"
+            info "Zscaler cert exported from System Keychain"
+        else
+            rm -f "$_tmp_ks"
+        fi
+    fi
+
+    # 4. Fallback: explicit PEM files (Linux / manually placed)
+    if [[ -z "$zsc_pem" ]]; then
+        for _p in "/etc/ssl/certs/zscaler.pem" "/usr/share/ca-certificates/zscaler.pem"; do
+            [[ -f "$_p" ]] && { zsc_pem="$_p"; break; }
+        done
+    fi
+
+    if [[ -z "$zsc_pem" ]]; then
+        skip "No Zscaler cert detected — assuming standard TLS (non-managed device)"
+        return 0
+    fi
+
+    # Build combined bundle: macOS system roots + System keychain + Zscaler cert
+    info "Building combined CA bundle for managed-device trust..."
+    {
+        security find-certificate -a -p \
+            /System/Library/Keychains/SystemRootCertificates.keychain 2>/dev/null || true
+        security find-certificate -a -p \
+            /Library/Keychains/System.keychain 2>/dev/null || true
+        cat "$zsc_pem"
+    } > "$combined_bundle"
+    chmod 644 "$combined_bundle"
+
+    export CURL_CA_BUNDLE="$combined_bundle"
+    export HOMEBREW_CURLOPT_CACERT="$combined_bundle"
+    export ZSC_PEM="$combined_bundle"
+    ok "Zscaler trust configured — $(wc -l < "$combined_bundle") cert lines in bundle"
+    quip "curl, brew, git, npm, yarn, and aws cli will trust this bundle"
+}
+
+# ── Configure installed tools to trust the Zscaler CA ────────────────────────
+# Call this AFTER tools are installed so config commands exist.
+configure_tool_certs() {
+    [[ -z "${ZSC_PEM:-}" ]] && return 0
+    banner "ZSCALER CERT TRUST — TOOL CONFIGURATION"
+
+    is_installed "git" && \
+        run_optional "git: trusting Zscaler CA" \
+            git config --global http.sslCAInfo "$ZSC_PEM"
+
+    is_installed "npm" && \
+        run_optional "npm: trusting Zscaler CA" \
+            npm config set cafile "$ZSC_PEM"
+
+    if is_installed "yarn"; then
+        run_optional "yarn: trusting Zscaler CA" \
+            yarn config set cafile "$ZSC_PEM" 2>/dev/null || \
+        run_optional "yarn (v2+): trusting Zscaler CA" \
+            yarn config set httpsCaFilePath "$ZSC_PEM" 2>/dev/null || true
+    fi
+
+    is_installed "aws" && \
+        run_optional "aws: trusting Zscaler CA" \
+            aws configure set default.ca_bundle "$ZSC_PEM"
+
+    if is_installed "pip3" || is_installed "pip"; then
+        local _pip_conf="$HOME/Library/Application Support/pip/pip.conf"
+        mkdir -p "$(dirname "$_pip_conf")"
+        if ! grep -q "^cert" "$_pip_conf" 2>/dev/null; then
+            printf '[global]\ncert = %s\n' "$ZSC_PEM" >> "$_pip_conf"
+            ok "pip: Zscaler CA added to pip.conf"
+        fi
+    fi
+
+    ok "Tool cert configuration complete"
+}
 
 # ── Cleanup: tools explicitly removed from this project ──────────────────────
 cleanup_removed_tools() {
@@ -156,53 +284,110 @@ show_help() {
     echo "Options:"
     echo "  --shell          Install shell environment only (skip projector)"
     echo "  --projector      Install projector tools only (skip shell)"
+    echo "  --no-casks       Skip desktop application cask installs (iTerm2, Keka)"
     echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
-    echo "Default: shows install menu (TTY) or full install (non-TTY)."
+    echo "Default: shows grouped TUI (TTY) or full install (non-TTY)."
 }
 
-# ── Install menus ─────────────────────────────────────────────────────────────
+# ── TUI selector (bubbletea) ──────────────────────────────────────────────────
+TUI_SELECTOR="$HOME/.terminal-kniferoll/bin/selector"
+
+build_tui_selector() {
+    local src="$SCRIPT_DIR/tui/selector"
+    [[ -d "$src" ]] || return 1
+    is_installed "go" || return 1
+    mkdir -p "$(dirname "$TUI_SELECTOR")"
+    # Rebuild if source is newer than binary
+    if [[ ! -x "$TUI_SELECTOR" || "$src/main.go" -nt "$TUI_SELECTOR" ]]; then
+        info "Building TUI selector..."
+        (cd "$src" && go mod tidy 2>/dev/null && \
+            go build -o "$TUI_SELECTOR" . 2>/dev/null) || return 1
+        ok "TUI selector built"
+    fi
+    return 0
+}
+
+run_tui_selector() {
+    local output
+    output="$("$TUI_SELECTOR" --mac)"
+    while IFS='=' read -r key val; do
+        [[ -n "$key" ]] && declare -g "$key"="$val"
+    done <<< "$output"
+}
+
+# ── Fallback bash menu ────────────────────────────────────────────────────────
 show_custom_menu() {
     echo -e "\n${BOLD}${CYAN}[ CUSTOM — select tool groups ]${RESET}\n"
     ask_yes_no "  Shell environment (Zsh, Oh My Zsh, plugins, configs)?" \
-        && INSTALL_SHELL=true || INSTALL_SHELL=false
-    ask_yes_no "  Core security & developer tools?" \
+        && DO_SHELL=true || DO_SHELL=false
+    ask_yes_no "  AI Tools (Gemini CLI)?" \
+        && DO_AI_TOOLS=true || DO_AI_TOOLS=false
+    ask_yes_no "  Developer Tools (bat, fzf, jq, go, python, node...)?" \
+        && DO_DEV_TOOLS=true || DO_DEV_TOOLS=false
+    ask_yes_no "  Package Managers (npm, yarn, pipx, uv, rustup)?" \
+        && DO_PKG_MGRS=true || DO_PKG_MGRS=false
+    ask_yes_no "  Security Tools (1Password, nmap, openssl, yara, wtfis)?" \
         && DO_SECURITY=true || DO_SECURITY=false
-    ask_yes_no "  Projector stack (Rust, weathr, JetBrains font, config)?" \
-        && INSTALL_PROJECTOR=true || INSTALL_PROJECTOR=false
+    ask_yes_no "  Cloud / CLI (awscli, rclone)?" \
+        && DO_CLOUD_CLI=true || DO_CLOUD_CLI=false
+    ask_yes_no "  Nerd Fonts?" \
+        && DO_FONTS=true || DO_FONTS=false
+    ask_yes_no "  Projector stack (weathr, trippy, terminal animation)?" \
+        && DO_PROJECTOR=true || DO_PROJECTOR=false
+    ask_yes_no "  Desktop applications (iTerm2, Keka)?" \
+        && DO_DESKTOP=true || DO_DESKTOP=false
 }
 
 show_menu() {
     echo -e "\n${BOLD}${BLADE}  What would you like to install?${RESET}\n"
-    echo -e "  ${CYAN}[1]${RESET} Full install     — Shell environment + Terminal projector ${DIM}(recommended)${RESET}"
+    echo -e "  ${CYAN}[1]${RESET} Full install     — everything ${DIM}(recommended)${RESET}"
     echo -e "  ${CYAN}[2]${RESET} Shell only       — Zsh, Oh My Zsh, plugins, aliases"
-    echo -e "  ${CYAN}[3]${RESET} Projector only   — Terminal animation suite (weather, bonsai, fastfetch)"
+    echo -e "  ${CYAN}[3]${RESET} Projector only   — Terminal animation suite"
     echo -e "  ${CYAN}[4]${RESET} Custom           — Choose individual tool groups"
     echo
     echo -en "${CYAN}  Choice [1-4]: ${RESET}"
     read -r _choice
     case "$_choice" in
-        1) INSTALL_SHELL=true;  INSTALL_PROJECTOR=true ;;
-        2) INSTALL_SHELL=true;  INSTALL_PROJECTOR=false ;;
-        3) INSTALL_SHELL=false; INSTALL_PROJECTOR=true ;;
+        1) : ;;  # all defaults are true
+        2) DO_SHELL=true; DO_AI_TOOLS=false; DO_DEV_TOOLS=false; DO_PKG_MGRS=false
+           DO_SECURITY=false; DO_CLOUD_CLI=false; DO_FONTS=false
+           DO_PROJECTOR=false; DO_DESKTOP=false ;;
+        3) DO_SHELL=false; DO_AI_TOOLS=false; DO_DEV_TOOLS=false; DO_PKG_MGRS=false
+           DO_SECURITY=false; DO_CLOUD_CLI=false; DO_FONTS=true
+           DO_PROJECTOR=true; DO_DESKTOP=false ;;
         4) show_custom_menu ;;
-        *) warn "Invalid choice — defaulting to full install"
-           INSTALL_SHELL=true; INSTALL_PROJECTOR=true ;;
+        *) warn "Invalid choice — defaulting to full install" ;;
     esac
 }
 
 # ── Flag parsing ──────────────────────────────────────────────────────────────
-INSTALL_SHELL=true
-INSTALL_PROJECTOR=true
+# All categories default to true (install everything)
+DO_SHELL=true
+DO_AI_TOOLS=true
+DO_DEV_TOOLS=true
+DO_PKG_MGRS=true
+DO_SECURITY=true
+DO_CLOUD_CLI=true
+DO_FONTS=true
+DO_PROJECTOR=true
+DO_DESKTOP=true
+
 EXPLICIT_FLAG=false
 MODE="${MODE:-batch}"
-DO_SECURITY=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; EXPLICIT_FLAG=true ;;
-        --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; EXPLICIT_FLAG=true ;;
+        --shell)
+            DO_SHELL=true; DO_AI_TOOLS=false; DO_DEV_TOOLS=false; DO_PKG_MGRS=false
+            DO_SECURITY=false; DO_CLOUD_CLI=false; DO_FONTS=false
+            DO_PROJECTOR=false; DO_DESKTOP=false; EXPLICIT_FLAG=true ;;
+        --projector)
+            DO_SHELL=false; DO_AI_TOOLS=false; DO_DEV_TOOLS=false; DO_PKG_MGRS=false
+            DO_SECURITY=false; DO_CLOUD_CLI=false; DO_FONTS=true
+            DO_PROJECTOR=true; DO_DESKTOP=false; EXPLICIT_FLAG=true ;;
+        --no-casks)    DO_DESKTOP=false ;;
         --interactive) MODE=interactive ;;
         --help)        show_help; exit 0 ;;
         *) err "Unknown parameter: $1"; show_help; exit 1 ;;
@@ -228,6 +413,11 @@ echo -e "${RESET}"
 quip "Log: $LOG_FILE"
 echo
 
+# ── Zscaler managed-device cert trust ────────────────────────────────────────
+# Runs before any curl/brew operation so managed devices can reach GitHub/brew.
+banner "MANAGED DEVICE SETUP"
+setup_zscaler_trust
+
 # ── Homebrew bootstrap ────────────────────────────────────────────────────────
 if ! is_installed "brew"; then
     brew_script="$(download_to_tmp \
@@ -245,19 +435,31 @@ elif [[ -x /usr/local/bin/brew ]]; then
     eval "$(/usr/local/bin/brew shellenv)"
 fi
 
+# Fix Homebrew share directory permissions to prevent oh-my-zsh compaudit warnings.
+# Homebrew sets /opt/homebrew/share group-writable (admin), which OMZ flags as insecure.
+if [[ -d /opt/homebrew/share ]]; then
+    run_optional "Hardening /opt/homebrew/share permissions" \
+        chmod g-w,o-w /opt/homebrew/share
+fi
+
 if is_installed "brew"; then
     append_if_missing "$HOME/.zprofile" \
         'command -v brew >/dev/null && eval "$(brew shellenv)"'
 fi
 
-# ── Show menu or use defaults ─────────────────────────────────────────────────
-if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
-    show_menu
+# ── Install Go early (needed to build TUI selector) ──────────────────────────
+if ! is_installed "go" && is_installed "brew"; then
+    run_optional "Installing Go (TUI prerequisite)" brew install go
 fi
 
-# ── Resolve deployment flags ──────────────────────────────────────────────────
-DO_SHELL="$INSTALL_SHELL"
-DO_PROJECTOR="$INSTALL_PROJECTOR"
+# ── Show TUI or fallback menu ─────────────────────────────────────────────────
+if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
+    if build_tui_selector && [[ -x "$TUI_SELECTOR" ]]; then
+        run_tui_selector
+    else
+        show_menu
+    fi
+fi
 
 info "Supply chain: strict (TLS enforced, hashes verified where available)"
 
@@ -284,7 +486,6 @@ if [[ "$DO_SHELL" == "true" ]]; then
         info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
         if ! git clone --depth 1 --branch "$OMZ_TAG" \
                 https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
-            # Tag may not exist yet — fall back to unattended script install with a warning
             warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
             omz_script=""
             omz_script="$(download_to_tmp \
@@ -339,9 +540,7 @@ if [[ "$DO_SHELL" == "true" ]]; then
         echo '[[ -f "$HOME/.shell/aliases_mac.zsh" ]] && source "$HOME/.shell/aliases_mac.zsh"' \
             >> "$HOME/.zshrc"
 
-    # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.).
-    # .zprofile covers login shells; .zshrc covers interactive non-login shells opened by GUIs.
-    # Both get the brew shellenv line so PATH is set regardless of how the shell is launched.
+    # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.)
     if [[ -d /opt/homebrew/bin ]]; then
         _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
         append_if_missing "$HOME/.zprofile" "$_brew_path_line"
@@ -354,9 +553,91 @@ if [[ "$DO_SHELL" == "true" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 3. SECURITY / DEVELOPER TOOLS
+# 3. AI TOOLS
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_AI_TOOLS" == "true" ]]; then
+    banner "AI TOOLS"
+    if ! is_installed "gemini"; then
+        run_optional "Installing Gemini CLI" brew install gemini-cli
+        ! is_installed "gemini" && is_installed "npm" && \
+            run_optional "Installing Gemini CLI (npm fallback)" \
+                npm install -g @google/gemini-cli || true
+    else
+        skip "Gemini CLI already installed"
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4. DEVELOPER TOOLS
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_DEV_TOOLS" == "true" ]]; then
+    banner "DEVELOPER TOOLS"
+    DEV_PACKAGES=(
+        bat binutils btop cbonsai cmatrix exiftool
+        fastfetch fontconfig freetype fzf gcc gh git gzip
+        harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses
+        nushell speedtest-cli sqlite starship tealdeer tmux
+        yazi zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
+        # Language runtimes
+        go openjdk python@3.11 ruby
+    )
+    for pkg in "${DEV_PACKAGES[@]}"; do
+        if brew list "$pkg" &>/dev/null 2>&1; then
+            skip "$pkg"
+        else
+            run_optional "Installing $pkg" brew install "$pkg" || FAILED_TOOLS+=("$pkg")
+        fi
+    done
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 5. PACKAGE MANAGERS
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_PKG_MGRS" == "true" ]]; then
+    banner "PACKAGE MANAGERS"
+
+    # Node.js + npm
+    if brew list node &>/dev/null 2>&1 || is_installed "node"; then
+        skip "node (npm)"
+    else
+        run_optional "Installing node + npm" brew install node || FAILED_TOOLS+=("node")
+    fi
+
+    # yarn
+    if is_installed "yarn"; then
+        skip "yarn"
+    else
+        # Prefer brew cask for yarn classic (v1)
+        run_optional "Installing yarn" brew install yarn || \
+            { is_installed "npm" && \
+              run_optional "Installing yarn (npm fallback)" npm install -g yarn; } || \
+            FAILED_TOOLS+=("yarn")
+    fi
+
+    # pipx + uv (Python package managers)
+    for pkg in pipx uv; do
+        if brew list "$pkg" &>/dev/null 2>&1 || is_installed "$pkg"; then
+            skip "$pkg"
+        else
+            run_optional "Installing $pkg" brew install "$pkg" || FAILED_TOOLS+=("$pkg")
+        fi
+    done
+    is_installed "pipx" && run_optional "Configuring pipx path" pipx ensurepath
+
+    # Rust / cargo via rustup
+    if brew list rustup &>/dev/null 2>&1 || is_installed "rustup"; then
+        skip "rustup"
+    else
+        run_optional "Installing rustup" brew install rustup || FAILED_TOOLS+=("rustup")
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 6. SECURITY TOOLS
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "$DO_SECURITY" == "true" ]]; then
+    banner "SECURITY TOOLS"
+
     # 1Password CLI
     if is_installed "op"; then
         skip "1Password CLI already installed"
@@ -366,33 +647,16 @@ if [[ "$DO_SECURITY" == "true" ]]; then
     fi
     mkdir -p "$HOME/.1password"
 
-    banner "SECURITY AND DEVELOPER TOOLS"
-    # atuin and mise removed 2026-04-05 — supply chain risk (see docs/SUPPLY_CHAIN_RISK.md)
-    BREW_PACKAGES=(
-        bat binutils btop ca-certificates cbonsai cmatrix exiftool
-        fastfetch fontconfig freetype fzf gcc gh git gnutls go gzip
-        harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses ngrep
-        nmap node nushell openjdk openssl@3 pipx python@3.11 rclone ripgrep ruby
-        rustup speedtest-cli sqlite starship tcpdump tealdeer tmux unbound uv
-        wireshark yazi yara zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
+    SECURITY_PACKAGES=(
+        ca-certificates gnutls nmap ngrep openssl@3 tcpdump unbound wireshark yara
     )
-    for pkg in "${BREW_PACKAGES[@]}"; do
+    for pkg in "${SECURITY_PACKAGES[@]}"; do
         if brew list "$pkg" &>/dev/null 2>&1; then
             skip "$pkg"
         else
             run_optional "Installing $pkg" brew install "$pkg" || FAILED_TOOLS+=("$pkg")
         fi
     done
-
-    # Gemini CLI
-    if ! is_installed "gemini"; then
-        run_optional "Installing Gemini CLI" brew install gemini-cli
-        ! is_installed "gemini" && is_installed "npm" && \
-            run_optional "Installing Gemini CLI (npm fallback)" \
-                npm install -g @google/gemini-cli || true
-    else
-        skip "Gemini CLI already installed"
-    fi
 
     # wtfis via pipx
     is_installed "wtfis" || {
@@ -402,23 +666,67 @@ if [[ "$DO_SECURITY" == "true" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 4. PROJECTOR STACK
+# 7. CLOUD / CLI
 # ────────────────────────────────────────────────────────────────────────────
-if [[ "$DO_PROJECTOR" == "true" ]]; then
-    banner "PROJECTOR STACK"
-    ensure_rust_toolchain
+if [[ "$DO_CLOUD_CLI" == "true" ]]; then
+    banner "CLOUD / CLI"
 
-    is_installed "weathr" || run_optional "Installing weathr via cargo" cargo install weathr
-    is_installed "trip"   || run_optional "Installing trippy via cargo" cargo install trippy
+    # AWS CLI
+    if is_installed "aws"; then
+        skip "AWS CLI already installed"
+    else
+        run_optional "Installing AWS CLI" brew install awscli || FAILED_TOOLS+=("awscli")
+    fi
 
-    # ── Nerd Fonts (macOS uses ~/Library/Fonts) ───────────────────────────────
+    # rclone
+    if brew list rclone &>/dev/null 2>&1 || is_installed "rclone"; then
+        skip "rclone"
+    else
+        run_optional "Installing rclone" brew install rclone || FAILED_TOOLS+=("rclone")
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 8. DESKTOP APPLICATIONS (Casks)
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_DESKTOP" == "true" ]]; then
+    banner "DESKTOP APPLICATIONS"
+
+    _restricted=false
+    if is_restricted_device; then
+        _restricted=true
+        info "Managed device detected — cask installs may require admin approval"
+    fi
+
+    if is_app_installed "iTerm"; then
+        skip "iTerm2 already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — iTerm2 may need Self Service or manual install"
+        run_optional "Installing iTerm2" brew install --cask iterm2
+        is_app_installed "iTerm" || warn "iTerm2 not found — install manually or via Self Service"
+    fi
+
+    if is_app_installed "Keka"; then
+        skip "Keka already installed"
+    else
+        [[ "$_restricted" == "true" ]] && \
+            quip "Restricted device — Keka may need Self Service or manual install"
+        run_optional "Installing Keka" brew install --cask keka
+        is_app_installed "Keka" || warn "Keka not found — install manually or via Self Service"
+    fi
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 9. NERD FONTS
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_FONTS" == "true" ]]; then
     FONT_DIR="$HOME/Library/Fonts"
     NERD_FONTS=(
         Iosevka Hack UbuntuMono JetBrainsMono 3270
         FiraCode CascadiaCode VictorMono Mononoki
         SpaceMono SourceCodePro Meslo GeistMono
     )
-    # Pinned release — update NERD_FONTS_VER here to upgrade all fonts at once
     NERD_FONTS_VER="v3.4.0"
     banner "NERD FONTS"
     mkdir -p "$FONT_DIR"
@@ -429,7 +737,10 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         fi
         _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
         _font_extract="$(mktemp -d /tmp/font-extract-XXXXXX)"
-        if curl --proto '=https' --tlsv1.2 -fsSL \
+        _font_curl_opts=(--proto '=https' --tlsv1.2 -fsSL)
+        [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+            _font_curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+        if curl "${_font_curl_opts[@]}" \
                 "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
                 -o "$_font_zip"; then
             unzip -qo "$_font_zip" -d "$_font_extract"
@@ -441,6 +752,17 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
         fi
         rm -rf "$_font_zip" "$_font_extract"
     done
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 10. PROJECTOR STACK
+# ────────────────────────────────────────────────────────────────────────────
+if [[ "$DO_PROJECTOR" == "true" ]]; then
+    banner "PROJECTOR STACK"
+    ensure_rust_toolchain
+
+    is_installed "weathr" || run_optional "Installing weathr via cargo" cargo install weathr
+    is_installed "trip"   || run_optional "Installing trippy via cargo" cargo install trippy
 
     banner "PROJECTOR CONFIGURATION"
     mkdir -p "$HOME/.config/projector"
@@ -451,7 +773,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
 fi
 
 # ────────────────────────────────────────────────────────────────────────────
-# 5. TERMINAL THEME
+# 11. TERMINAL THEME
 # ────────────────────────────────────────────────────────────────────────────
 banner "TERMINAL THEME"
 ITERM_THEME_SRC="$SCRIPT_DIR/macos/Cyberwave.itermcolors"
@@ -476,6 +798,11 @@ if [[ -f "$ITERM_THEME_SRC" ]]; then
 else
     warn "Cyberwave theme source not found — run from repo root"
 fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 12. TOOL CERT CONFIGURATION (Zscaler managed devices)
+# ────────────────────────────────────────────────────────────────────────────
+configure_tool_certs
 
 # ────────────────────────────────────────────────────────────────────────────
 # SUMMARY
