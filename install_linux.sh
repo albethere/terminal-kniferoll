@@ -350,8 +350,8 @@ install_1password_cli() {
         run_optional "Installing 1Password prerequisites" \
             bash -c "$SUDO apt-get install -y -qq curl gnupg ca-certificates"
         $SUDO install -d -m 0755 /usr/share/keyrings
-        gpg --dearmor < "$key_asc" | $SUDO install -m 0644 /dev/stdin \
-            /usr/share/keyrings/1password-archive-keyring.gpg
+        gpg --dearmor < "$key_asc" > "$key_gpg"
+        $SUDO install -m 0644 "$key_gpg" /usr/share/keyrings/1password-archive-keyring.gpg
         rm -f "$key_asc" "$key_gpg"
         local arch; arch="$(dpkg --print-architecture)"
         echo "deb [arch=${arch} signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] \
@@ -533,9 +533,9 @@ show_menu() {
     echo -en "${CYAN}  Choice [1-4]: ${RESET}"
     read -r _choice
     case "$_choice" in
-        1) INSTALL_SHELL=true;  INSTALL_PROJECTOR=true ;;
-        2) INSTALL_SHELL=true;  INSTALL_PROJECTOR=false ;;
-        3) INSTALL_SHELL=false; INSTALL_PROJECTOR=true ;;
+        1) INSTALL_SHELL=true;  INSTALL_PROJECTOR=true;  DO_SECURITY=true;  DO_BREW=true ;;
+        2) INSTALL_SHELL=true;  INSTALL_PROJECTOR=false; DO_SECURITY=false; DO_BREW=false ;;
+        3) INSTALL_SHELL=false; INSTALL_PROJECTOR=true;  DO_SECURITY=false; DO_BREW=false ;;
         4) show_custom_menu ;;
         *) warn "Invalid choice — defaulting to full install"
            INSTALL_SHELL=true; INSTALL_PROJECTOR=true ;;
@@ -552,8 +552,8 @@ DO_BREW=true
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; EXPLICIT_FLAG=true ;;
-        --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; EXPLICIT_FLAG=true ;;
+        --shell)       INSTALL_SHELL=true; INSTALL_PROJECTOR=false; DO_SECURITY=false; DO_BREW=false; EXPLICIT_FLAG=true ;;
+        --projector)   INSTALL_SHELL=false; INSTALL_PROJECTOR=true; DO_SECURITY=false; DO_BREW=false; EXPLICIT_FLAG=true ;;
         --interactive) MODE=interactive ;;
         --help)        show_help; exit 0 ;;
         *) err "Unknown parameter: $1"; show_help; exit 1 ;;
