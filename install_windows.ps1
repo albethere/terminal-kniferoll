@@ -73,7 +73,7 @@ param(
     [switch]$NoRelaunch,
     [switch]$NoLogViewer,
     [Alias('h')]
-    [switch]$Help
+    [switch]$Help,
     [switch]$DryRun
 )
 

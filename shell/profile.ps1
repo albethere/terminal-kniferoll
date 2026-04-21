@@ -3,22 +3,26 @@
 # Windows equivalent of shell/zshrc.zsh — dot-sourced from $PROFILE.CurrentUserAllHosts
 # by install_windows.ps1.
 # ==============================================================================
-# Guard: this file may live in a cross-platform dotfiles repo; no-op on non-Windows
-if (-not $IsWindows) { return }
+# Guard: no-op on non-Windows. Use $null check so this works on PS 5.1 where
+# $IsWindows doesn't exist (PS 5.1 only runs on Windows, so the guard is a no-op).
+if ($null -ne $IsWindows -and -not $IsWindows) { return }
 
 # ── ZSCALER PROXY CONFIG (CORP / MANAGED DEVICES ONLY) ───────────────────────
 #
 # Detection order (mirrors install_mac.sh logic adapted for Windows):
 #   1. Previously built CA bundle (installer-cached, fast path on re-run):
 #        $env:USERPROFILE\.config\terminal-kniferoll\ca-bundle.pem
-#   2. LM standard user path (LM Zscaler Developer Onboarding doc, Dec 2025):
-#        $env:USERPROFILE\.certificates\zscaler.pem  (.crt copy also checked)
-#   3. ProgramData Zscaler paths (ZIA/ZPA client defaults)
+#   2. PDF-prescribed LM standard paths (LM Zscaler Developer Onboarding, Dec 2025):
+#        C:\Users\<user>\.certificates\zscaler.pem  /  .crt copy
+#   3. $env:USERPROFILE\.certificates\... (user-level, equiv. to above)
+#   4. ProgramData Zscaler paths (ZIA/ZPA client defaults)
 #
 # If none found: no Zscaler env is set; standard system trust applies.
 # HOMEBREW_CURLOPT_CACERT is intentionally excluded — macOS-only env var.
 $_zscCandidates = @(
     "$env:USERPROFILE\.config\terminal-kniferoll\ca-bundle.pem",
+    "C:\Users\$env:UserName\.certificates\zscaler.pem",
+    "C:\Users\$env:UserName\.certificates\zscaler.crt",
     "$env:USERPROFILE\.certificates\zscaler.pem",
     "$env:USERPROFILE\.certificates\zscaler.crt",
     'C:\ProgramData\Zscaler\ZscalerRootCertificate-2048-SHA256.crt',
@@ -134,7 +138,9 @@ function gb  { git branch @args }
 function gco { git checkout @args }
 function gpl { git pull }
 
-if (Get-Command rg -ErrorAction SilentlyContinue) { Set-Alias grep rg }
+if (Get-Command rg -ErrorAction SilentlyContinue) {
+    Set-Alias grep rg -Force -ErrorAction SilentlyContinue
+}
 
 # ── up: cross-package-manager updater (matches Unix `up` alias) ───────────────
 function up {
@@ -158,8 +164,8 @@ function up {
     Write-Host '==> Update-Module (PSGallery, CurrentUser)' -ForegroundColor Cyan
     Update-Module -Scope CurrentUser -Force -ErrorAction Continue
 }
-Set-Alias abu up
-Set-Alias bru up
+Set-Alias abu up -Force -ErrorAction SilentlyContinue
+Set-Alias bru up -Force -ErrorAction SilentlyContinue
 
 # ── Private API keys (from environment, never hardcoded) ──────────────────────
 if ($env:PRIVATE_VT_API_KEY)        { $env:VT_API_KEY        = $env:PRIVATE_VT_API_KEY }
