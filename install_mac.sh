@@ -43,6 +43,7 @@ quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
 # ── Failed tools tracker ──────────────────────────────────────────────────────
 FAILED_TOOLS=()
 
+# shellcheck disable=SC2329  # invoked indirectly via ERR trap below
 on_error() { warn "Unexpected failure at line $1: $2"; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -223,16 +224,20 @@ setup_zscaler_trust() {
         return 0
     fi
 
-    # Build combined bundle: macOS system roots + System keychain + Zscaler cert
+    # Build combined bundle: macOS system roots + System keychain + Zscaler cert.
+    # Write atomically (tmp + mv) so a crash mid-build doesn't leave a corrupt
+    # file that the fast path would reuse on the next run.
     info "Building combined CA bundle for managed-device trust..."
+    local _tmp_bundle; _tmp_bundle="$(mktemp "$bundle_dir/ca-bundle-XXXXXX.pem")"
+    chmod 644 "$_tmp_bundle"
     {
         security find-certificate -a -p \
             /System/Library/Keychains/SystemRootCertificates.keychain 2>/dev/null || true
         security find-certificate -a -p \
             /Library/Keychains/System.keychain 2>/dev/null || true
         cat "$zsc_pem"
-    } > "$combined_bundle"
-    chmod 644 "$combined_bundle"
+    } > "$_tmp_bundle"
+    mv -f "$_tmp_bundle" "$combined_bundle"
 
     _zscaler_export_env "$combined_bundle"
     ok "Zscaler trust configured — $(wc -l < "$combined_bundle") cert lines in bundle"
@@ -582,6 +587,7 @@ if [[ -d /opt/homebrew/share ]]; then
 fi
 
 if is_installed "brew"; then
+    # shellcheck disable=SC2016  # single quotes intentional: string written to ~/.zprofile, expands on source
     append_if_missing "$HOME/.zprofile" \
         'command -v brew >/dev/null && eval "$(brew shellenv)"'
 fi
@@ -680,12 +686,14 @@ if [[ "$DO_SHELL" == "true" ]]; then
             > "$HOME/.shell/aliases_mac.zsh"
         echo 'alias sudo="sudo -E"' >> "$HOME/.shell/aliases_mac.zsh"
     fi
+    # shellcheck disable=SC2016  # single quotes intentional: written to ~/.zshrc, expands on source
     grep -q "aliases_mac.zsh" "$HOME/.zshrc" || \
         echo '[[ -f "$HOME/.shell/aliases_mac.zsh" ]] && source "$HOME/.shell/aliases_mac.zsh"' \
             >> "$HOME/.zshrc"
 
     # Ensure /opt/homebrew/bin is in PATH for non-login shells (Terminal.app, VS Code, etc.)
     if [[ -d /opt/homebrew/bin ]]; then
+        # shellcheck disable=SC2016  # single quotes intentional: written to rc files, expands on source
         _brew_path_line='[[ -x /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"'
         append_if_missing "$HOME/.zprofile" "$_brew_path_line"
         append_if_missing "$HOME/.zshrc"    "$_brew_path_line"

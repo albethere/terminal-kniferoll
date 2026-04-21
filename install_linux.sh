@@ -43,6 +43,7 @@ quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
 # ── Failed tools tracker ──────────────────────────────────────────────────────
 FAILED_TOOLS=()
 
+# shellcheck disable=SC2329  # invoked indirectly via ERR trap below
 on_error() { warn "Unexpected failure at line $1: $2"; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
@@ -56,6 +57,7 @@ run_optional() {
 }
 
 # ── Helper: download URL to a secure temp file ───────────────────────────────
+# Respects CURL_CA_BUNDLE if set (e.g. on a Zscaler-intercepted network).
 download_to_tmp() {
     local url="$1" pattern="$2" tmp_file old_umask
     old_umask="$(umask)"
@@ -63,7 +65,10 @@ download_to_tmp() {
     tmp_file="$(mktemp "/tmp/${pattern}")"
     umask "$old_umask"
     chmod 600 "$tmp_file"
-    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$tmp_file"
+    local curl_opts=(--proto '=https' --tlsv1.2 -fsSL)
+    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+        curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+    curl "${curl_opts[@]}" "$url" -o "$tmp_file"
     echo "$tmp_file"
 }
 
@@ -396,10 +401,11 @@ install_homebrew_and_gemini() {
     [[ -z "$brew_bin" ]] && is_installed "brew" && brew_bin="$(command -v brew)"
     if [[ -n "$brew_bin" ]]; then
         eval "$("$brew_bin" shellenv)"
-        append_if_missing "$HOME/.zshrc" \
-            'command -v brew >/dev/null && eval "$(brew shellenv)"'
-        append_if_missing "$HOME/.bashrc" \
-            'command -v brew >/dev/null && eval "$(brew shellenv)"'
+        # Single-quoted strings below are written literally to rc files and expand on source.
+        # shellcheck disable=SC2016
+        append_if_missing "$HOME/.zshrc"  'command -v brew >/dev/null && eval "$(brew shellenv)"'
+        # shellcheck disable=SC2016
+        append_if_missing "$HOME/.bashrc" 'command -v brew >/dev/null && eval "$(brew shellenv)"'
         run_optional "Updating Homebrew" brew update
         is_installed "gcc" || run_optional "Installing gcc via Homebrew" brew install gcc
         if ! is_installed "gemini"; then
@@ -768,8 +774,11 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         _install_uv_safe
 
         if ! is_installed "nu"; then
-            is_installed "cargo" && cargo_install "nu" "nu" "nushell" || \
+            if is_installed "cargo"; then
+                cargo_install "nu" "nu" "nushell"
+            else
                 warn "nushell not in apt and no cargo — skipping"
+            fi
         fi
         install_yazi_binary
         # mise and atuin are not installed — removed 2026-04-05 (supply chain risk)
