@@ -555,8 +555,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── Supply chain guard ────────────────────────────────────────────────────────
 # shellcheck source=lib/supply_chain_guard.sh
 source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
-# shellcheck source=lib/rc_sweep.sh
-source "$SCRIPT_DIR/lib/rc_sweep.sh"
+# shellcheck source=scripts/lib/sweep-zscaler.sh
+source "$SCRIPT_DIR/scripts/lib/sweep-zscaler.sh"
 
 # ── ASCII banner ──────────────────────────────────────────────────────────────
 echo -e "${BOLD}${CYAN}"
