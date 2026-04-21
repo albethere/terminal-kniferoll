@@ -99,19 +99,71 @@ is_restricted_device() {
     profiles status -type enrollment 2>/dev/null | grep -qi "yes"
 }
 
+# ── TLS preflight check ───────────────────────────────────────────────────────
+# Curls the Homebrew install script endpoint and checks for:
+#   - curl exit 60: SSL cert verification failure (Zscaler intercepting, untrusted)
+#   - HTML response body: Zscaler/corporate block splash page
+#   - Response contains "zscaler" anywhere: explicit interception marker
+# Returns 0 if TLS is clean, 1 if intercepted or TLS-broken.
+# Caller must NOT proceed to brew/omz/git installs until this passes.
+preflight_zscaler_check() {
+    local test_url="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+    local curl_opts=(--proto '=https' --tlsv1.2 --max-time 15 -fsSL)
+    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+        curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+
+    local response exit_code
+    response=$(curl "${curl_opts[@]}" "$test_url" 2>&1) || exit_code=$?
+    exit_code="${exit_code:-0}"
+
+    # curl exit 60 = SSL certificate problem — Zscaler not yet trusted
+    if [[ "$exit_code" -eq 60 ]]; then
+        warn "preflight: TLS certificate error (SSL verification failed)"
+        warn "preflight: Zscaler is intercepting HTTPS and the cert is not trusted yet"
+        return 1
+    fi
+
+    # Any other curl failure (network down, timeout, DNS)
+    if [[ "$exit_code" -ne 0 ]]; then
+        warn "preflight: curl failed (exit $exit_code) — network may be unavailable"
+        return 1
+    fi
+
+    # HTML response means a browser-redirect / splash page, not a shell script
+    if echo "$response" | grep -qi "<html\|<title\|<!DOCTYPE"; then
+        warn "preflight: received HTML instead of a shell script — corporate intercept detected"
+        return 1
+    fi
+
+    # Zscaler block-page body marker
+    if echo "$response" | grep -qi "zscaler\|zpa_block\|access denied by zscaler"; then
+        warn "preflight: Zscaler block-page marker in response body"
+        return 1
+    fi
+
+    ok "preflight: TLS validated — raw.githubusercontent.com reachable, no interception detected"
+    return 0
+}
+
 # ── Zscaler managed-device cert trust ────────────────────────────────────────
-# Must be called BEFORE any curl/Homebrew operations on managed macOS devices.
-# Builds a combined CA bundle (macOS system roots + Zscaler) and sets
-# CURL_CA_BUNDLE / HOMEBREW_CURLOPT_CACERT so brew bootstrap succeeds behind
-# Zscaler TLS interception.
+# Call AFTER preflight_zscaler_check returns non-zero.
+# Builds a combined CA bundle (macOS system roots + Zscaler) and exports all
+# cert env vars so every subsequent curl/brew/git/npm/pip/aws in this session
+# inherits them — including oh-my-zsh's git clone.
 #
-# Detection order (macOS-only paths — no Linux paths in this script):
+# Detection order (macOS-only — no Linux paths in this script):
 #   1. Previously built combined bundle  (fast path on re-run)
-#   2. LM standard path: /Users/Shared/.certificates/zscaler.pem
-#      (Liberty Mutual Zscaler Developer Onboarding doc, Dec 2025)
-#   3. Zscaler app path  (ZIA/ZPA client may write cert here)
-#   4. System Keychain export  (MDM-enrolled device without Zscaler app)
+#   2. LM standard path: /Users/Shared/.certificates/zscaler.pem  (PDF-prescribed)
+#   3. Zscaler app path  (ZIA/ZPA client default on macOS)
+#   4. System Keychain export  (MDM-enrolled without Zscaler app)
+#
+# Flags:
+#   --required   Die (exit non-zero) if no cert is found instead of returning 0.
+#                Pass this when preflight already detected interception.
 setup_zscaler_trust() {
+    local required=false
+    [[ "${1:-}" == "--required" ]] && required=true
+
     local zsc_pem=""
     local bundle_dir="$HOME/.config/terminal-kniferoll"
     local combined_bundle="$bundle_dir/ca-bundle.pem"
@@ -119,14 +171,12 @@ setup_zscaler_trust() {
 
     # 1. Fast path — prior installer run already built the bundle
     if [[ -s "$combined_bundle" ]]; then
-        export CURL_CA_BUNDLE="$combined_bundle"
-        export HOMEBREW_CURLOPT_CACERT="$combined_bundle"
-        export ZSC_PEM="$combined_bundle"
+        _zscaler_export_env "$combined_bundle"
         ok "Zscaler trust: using cached CA bundle"
         return 0
     fi
 
-    # 2. LM standard path — engineers place the cert here per LM onboarding doc
+    # 2. LM standard path (Liberty Mutual Zscaler Developer Onboarding doc, Dec 2025)
     if [[ -s "/Users/Shared/.certificates/zscaler.pem" ]]; then
         zsc_pem="/Users/Shared/.certificates/zscaler.pem"
         info "Zscaler cert found at LM standard path (/Users/Shared/.certificates/)"
@@ -156,6 +206,19 @@ setup_zscaler_trust() {
     fi
 
     if [[ -z "$zsc_pem" ]]; then
+        if [[ "$required" == "true" ]]; then
+            err "Zscaler TLS interception detected but no Zscaler root cert was found."
+            err ""
+            err "Remediation — run ONE of the following:"
+            err "  1. Place the Zscaler cert at the LM standard path:"
+            err "       /Users/Shared/.certificates/zscaler.pem"
+            err "     (See: LM Zscaler Developer Onboarding doc, section 'Get the Required Certificate')"
+            err "  2. Install the Zscaler client app (ZIA/ZPA) — it writes the cert automatically."
+            err "  3. Import the cert into the System Keychain via IT/MDM."
+            err ""
+            err "After placing the cert, re-run: ./install_mac.sh"
+            die "Cannot continue without Zscaler root cert on a managed device"
+        fi
         skip "No Zscaler cert detected — assuming standard TLS (non-managed device)"
         return 0
     fi
@@ -171,11 +234,25 @@ setup_zscaler_trust() {
     } > "$combined_bundle"
     chmod 644 "$combined_bundle"
 
-    export CURL_CA_BUNDLE="$combined_bundle"
-    export HOMEBREW_CURLOPT_CACERT="$combined_bundle"
-    export ZSC_PEM="$combined_bundle"
+    _zscaler_export_env "$combined_bundle"
     ok "Zscaler trust configured — $(wc -l < "$combined_bundle") cert lines in bundle"
-    quip "curl, brew, git, npm, yarn, and aws cli will trust this bundle"
+    quip "curl, brew, git, npm, yarn, pip, aws cli will all trust this bundle in this session"
+}
+
+# ── Export all cert env vars for the current session ─────────────────────────
+# Called by setup_zscaler_trust. Sets vars for every tool that does TLS in the
+# install session — including git (for oh-my-zsh clone) and node/pip/aws.
+_zscaler_export_env() {
+    local bundle="$1"
+    export CURL_CA_BUNDLE="$bundle"
+    export HOMEBREW_CURLOPT_CACERT="$bundle"
+    export SSL_CERT_FILE="$bundle"
+    export GIT_SSL_CAINFO="$bundle"
+    export NODE_EXTRA_CA_CERTS="$bundle"
+    export REQUESTS_CA_BUNDLE="$bundle"
+    export AWS_CA_BUNDLE="$bundle"
+    export PIP_CERT="$bundle"
+    export ZSC_PEM="$bundle"
 }
 
 # ── Configure installed tools to trust the Zscaler CA ────────────────────────
@@ -446,18 +523,47 @@ echo -e "${RESET}"
 quip "Log: $LOG_FILE"
 echo
 
-# ── Zscaler managed-device cert trust ────────────────────────────────────────
-# Runs before any curl/brew operation so managed devices can reach GitHub/brew.
-banner "MANAGED DEVICE SETUP"
-setup_zscaler_trust
+# ── TLS preflight + Zscaler trust (hard gate) ────────────────────────────────
+# This section uses set -e semantics. A failure here stops the installer —
+# proceeding with a broken TLS stack would silently corrupt every download.
+banner "TLS PREFLIGHT"
+if ! preflight_zscaler_check; then
+    banner "MANAGED DEVICE SETUP — REQUIRED"
+    info "TLS interception detected — configuring Zscaler cert trust before proceeding"
+    setup_zscaler_trust --required
+
+    info "Re-validating TLS after trust setup..."
+    if ! preflight_zscaler_check; then
+        err "TLS validation failed even after Zscaler cert trust was configured."
+        err ""
+        err "Possible causes:"
+        err "  - The Zscaler cert bundle is incomplete or expired"
+        err "  - A different corporate proxy is intercepting (not Zscaler)"
+        err "  - Network connectivity issue (VPN not connected?)"
+        err ""
+        err "Log: $LOG_FILE"
+        die "TLS still broken after trust setup — aborting install"
+    fi
+    ok "TLS re-validated — all subsequent curl/brew/git installs will use the Zscaler CA bundle"
+else
+    # Opportunistic cert detection: wire up env vars for tool configuration
+    # even on non-managed devices that happen to have a Zscaler cert present.
+    setup_zscaler_trust
+fi
 
 # ── Homebrew bootstrap ────────────────────────────────────────────────────────
 if ! is_installed "brew"; then
+    info "Installing Homebrew..."
     brew_script="$(download_to_tmp \
         "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" \
         "homebrew-install-XXXXXX.sh")"
-    run_optional "Installing Homebrew" env NONINTERACTIVE=1 /bin/bash "$brew_script"
+    # Hard gate: if Homebrew fails to install, nothing else can succeed.
+    if ! env NONINTERACTIVE=1 /bin/bash "$brew_script"; then
+        rm -f "$brew_script"
+        die "Homebrew installation failed — cannot continue without a package manager"
+    fi
     rm -f "$brew_script"
+    ok "Homebrew installed"
 else
     skip "Homebrew already installed"
 fi
@@ -514,19 +620,24 @@ if [[ "$DO_SHELL" == "true" ]]; then
 
     if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
         # Pinned to a specific release tag instead of piping master/install.sh.
+        # GIT_SSL_CAINFO is already exported (set in _zscaler_export_env above) so
+        # this clone trusts the Zscaler CA on managed devices.
         # Update OMZ_TAG when upgrading. Tags: https://github.com/ohmyzsh/ohmyzsh/tags
         OMZ_TAG="24.9.0"
-        info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)"
+        info "Cloning Oh My Zsh at tag ${OMZ_TAG} (pinned)..."
         if ! git clone --depth 1 --branch "$OMZ_TAG" \
                 https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" 2>/dev/null; then
-            warn "Tag ${OMZ_TAG} not found in ohmyzsh/ohmyzsh — falling back to install.sh (unpinned)"
-            omz_script=""
+            warn "Tag ${OMZ_TAG} not found — falling back to install.sh (unpinned)"
             omz_script="$(download_to_tmp \
                 "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh" \
                 "ohmyzsh-install-XXXXXX.sh")"
-            RUNZSH=no CHSH=no run_optional "Installing Oh My Zsh (unpinned)" \
-                bash "$omz_script" --unattended
+            # TLS preflight already passed; failure here is a real error.
+            if ! RUNZSH=no CHSH=no bash "$omz_script" --unattended; then
+                rm -f "$omz_script"
+                die "Oh My Zsh installation failed — TLS was validated but the install script returned non-zero"
+            fi
             rm -f "$omz_script"
+            ok "Oh My Zsh installed (unpinned fallback)"
         else
             ok "Oh My Zsh cloned at ${OMZ_TAG}"
         fi
