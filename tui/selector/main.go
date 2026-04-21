@@ -69,12 +69,24 @@ var baseItems = []item{
 	},
 }
 
+// desktopItem is shown only on macOS (--mac flag).
 var desktopItem = item{
 	key:         "DO_DESKTOP",
 	label:       "Desktop Apps (macOS)",
 	description: "iTerm2 · Keka",
 	checked:     true,
 }
+
+// wslItem is shown only on Windows (--windows flag).
+var wslItem = item{
+	key:         "DO_WSL",
+	label:       "WSL Setup",
+	description: "Install WSL2 + Ubuntu (run install_linux.sh inside for full Zsh/OMZ)",
+	checked:     false, // opt-in: most Windows users may not need WSL
+}
+
+// windowsShellDesc overrides the baseItems DO_SHELL description on Windows.
+const windowsShellDesc = "PowerShell profile, Oh My Posh, PS modules, aliases"
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
@@ -127,6 +139,7 @@ type model struct {
 	height   int        // terminal height (set on WindowSizeMsg)
 	width    int
 	showMac  bool
+	showWin  bool
 	aborted  bool
 	quitting bool
 }
@@ -145,15 +158,29 @@ func (m *model) visibleRows() int {
 	return v
 }
 
-func initialModel(showMac bool) model {
+func initialModel(showMac, showWin bool) model {
 	items := make([]item, len(baseItems))
 	copy(items, baseItems)
+
+	// On Windows: override DO_SHELL description to be PS-specific.
+	if showWin {
+		for i := range items {
+			if items[i].key == "DO_SHELL" {
+				items[i].description = windowsShellDesc
+			}
+		}
+		items = append(items, wslItem)
+	}
+
+	// On macOS: add Desktop Apps item.
 	if showMac {
 		items = append(items, desktopItem)
 	}
+
 	return model{
 		items:   items,
 		showMac: showMac,
+		showWin: showWin,
 		height:  24, // sensible default before WindowSizeMsg
 		width:   80,
 	}
@@ -330,13 +357,17 @@ func printResults(items []item, aborted bool) {
 
 func main() {
 	showMac := false
+	showWin := false
 	for _, arg := range os.Args[1:] {
-		if arg == "--mac" {
+		switch arg {
+		case "--mac":
 			showMac = true
+		case "--windows":
+			showWin = true
 		}
 	}
 
-	m := initialModel(showMac)
+	m := initialModel(showMac, showWin)
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
