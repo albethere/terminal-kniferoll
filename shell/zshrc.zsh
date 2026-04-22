@@ -2,8 +2,9 @@
 # TERMINAL-KNIFEROLL: Defensive Security Engineer Configuration
 # ==============================================================================
 
-# --- HOMEBREW (Linux & macOS) ---
-if [[ -d "/home/linuxbrew/.linuxbrew" ]]; then
+# --- HOMEBREW ---
+# Linuxbrew only on Linux; macOS brew is handled via the brew-shellenv managed block.
+if [[ "$(uname)" == "Linux" && -d "/home/linuxbrew/.linuxbrew" ]]; then
     eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 elif [[ -f "/opt/homebrew/bin/brew" ]]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"

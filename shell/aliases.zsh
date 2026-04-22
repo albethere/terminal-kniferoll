@@ -27,7 +27,7 @@ alias vi='nvim'
 
 # Network
 alias myip='curl -s https://icanhazip.com'
-alias ports='ss -tulanp'
+if command -v ss &>/dev/null; then alias ports='ss -tulanp'; fi
 
 # Git shortcuts
 alias gs='git status'
@@ -53,6 +53,8 @@ alias zshrc='${EDITOR:-nvim} ~/.zshrc'
 if command -v bat &>/dev/null; then alias cat='bat'; fi
 if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then alias cat='batcat'; fi
 if command -v sd &>/dev/null; then alias subs='sd'; fi
+# trippy installs as 'trip' (cargo crate name vs binary name mismatch)
+if command -v trip &>/dev/null; then alias trippy='trip'; fi
 
 # Shell management
 alias snzrc='sudo nano ~/.zshrc'
