@@ -131,6 +131,298 @@ ask_yes_no() {
 # ── Helper: check if binary is on PATH ───────────────────────────────────────
 is_installed() { command -v "$1" &>/dev/null; }
 
+# ── Zscaler splash-page helpers ───────────────────────────────────────────────
+#
+# Environment variables (all optional):
+#   TERMINAL_KNIFEROLL_ZSCALER_AUTO_ACCEPT=1   (default) Try POST auto-accept.
+#   TERMINAL_KNIFEROLL_ZSCALER_AUTO_ACCEPT=0   Skip auto-accept; go straight to manual.
+#   TERMINAL_KNIFEROLL_ZSCALER_REASON="..."    Override form reason field value.
+
+_splash_log_file="$HOME/.config/terminal-kniferoll/zscaler-splash.log"
+
+_splash_log() {
+    mkdir -p "$(dirname "$_splash_log_file")"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$_splash_log_file"
+}
+
+# URL-encode a string using python3 (available on modern Linux distros).
+_url_encode() { python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1]))" "$1" 2>/dev/null || printf '%s' "$1"; }
+
+# zscaler_attempt_auto_accept HTML SPLASH_URL COOKIE_JAR
+# Parses a Zscaler acknowledgment HTML form, posts the acceptance, returns 0 on success.
+zscaler_attempt_auto_accept() {
+    local html="$1" splash_url="$2" cookie_jar="$3"
+
+    _splash_log "--- auto-accept attempt: $splash_url"
+
+    # Extract <form action="..."> (first form)
+    local form_action
+    form_action=$(printf '%s' "$html" | grep -oiE '<form[^>]+>' | head -1 | \
+        grep -oiE 'action="[^"]+"' | sed 's/action="//;s/"//')
+    if [[ -z "$form_action" ]]; then
+        # single-quoted variant
+        form_action=$(printf '%s' "$html" | grep -oiE "<form[^>]+>" | head -1 | \
+            grep -oiE "action='[^']+'" | sed "s/action='//;s/'//")
+    fi
+    if [[ -z "$form_action" ]]; then
+        _splash_log "no form action found — cannot auto-accept"
+        return 1
+    fi
+
+    # Resolve relative action URL
+    if [[ "$form_action" != http* ]]; then
+        local _base; _base="$(printf '%s' "$splash_url" | grep -oE 'https?://[^/]+')"
+        [[ "$form_action" == /* ]] && form_action="${_base}${form_action}" \
+                                   || form_action="${_base}/${form_action}"
+    fi
+
+    # Collect hidden fields  →  name=value& pairs
+    local post_data=""
+    while IFS= read -r _field; do
+        local _n _v
+        _n=$(printf '%s' "$_field" | grep -oiE 'name="[^"]+"'  | head -1 | sed 's/name="//;s/"//')
+        _v=$(printf '%s' "$_field" | grep -oiE 'value="[^"]*"' | head -1 | sed 's/value="//;s/"//')
+        [[ -z "$_n" ]] && continue
+        post_data+="$(_url_encode "$_n")=$(_url_encode "$_v")&"
+    done < <(printf '%s' "$html" | grep -oiE '<input[^>]+type="hidden"[^>]*>' | head -30)
+
+    # Explicit accept/acknowledge/continue button fields
+    local _accept_name _accept_val
+    _accept_name=$(printf '%s' "$html" | grep -oiE '<input[^>]+(name="(accept|acknowledge|agree|continue|proceed)")[^>]*>' | head -1 | \
+        grep -oiE 'name="[^"]+"' | sed 's/name="//;s/"//')
+    if [[ -n "$_accept_name" ]]; then
+        _accept_val=$(printf '%s' "$html" | grep -oiE 'name="'"$_accept_name"'"[^>]*>' | head -1 | \
+            grep -oiE 'value="[^"]*"' | sed 's/value="//;s/"//')
+        post_data+="$(_url_encode "$_accept_name")=$(_url_encode "${_accept_val:-Agree}")&"
+    else
+        # Generic fallback fields that common Zscaler forms use
+        post_data+="accept=Agree&agree=true&acknowledge=1&"
+    fi
+
+    # Reason/justification field
+    local _reason="${TERMINAL_KNIFEROLL_ZSCALER_REASON:-Developer environment setup}"
+    if printf '%s' "$html" | grep -qi 'name="reason"'; then
+        post_data+="reason=$(_url_encode "$_reason")&"
+    fi
+    post_data="${post_data%&}"  # strip trailing &
+
+    _splash_log "form_action: $form_action"
+    _splash_log "post_fields: $post_data"
+
+    # POST the form, replay cookies
+    local curl_opts=(--proto '=https' --tlsv1.2 --max-time 20 -fsSL
+                     -X POST --data "$post_data"
+                     -H "Content-Type: application/x-www-form-urlencoded")
+    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+    [[ -f "$cookie_jar" ]] && curl_opts+=(-b "$cookie_jar" -c "$cookie_jar")
+
+    local post_resp post_rc=0
+    post_resp=$(curl "${curl_opts[@]}" "$form_action" 2>&1) || post_rc=$?
+
+    if [[ "$post_rc" -ne 0 ]]; then
+        _splash_log "POST failed (curl exit $post_rc)"
+        return 1
+    fi
+
+    # Success: response is NOT an HTML splash page
+    if ! printf '%s' "$post_resp" | grep -qi "<html\|<!DOCTYPE\|zscaler\|zpa_block\|access denied"; then
+        _splash_log "auto-accept: SUCCESS"
+        return 0
+    fi
+
+    _splash_log "auto-accept: POST returned another HTML page — failed"
+    return 1
+}
+
+# zscaler_manual_prompt SPLASH_URL
+# Shows a user-friendly box, opens the URL in the default browser, waits for Enter.
+zscaler_manual_prompt() {
+    local splash_url="$1"
+    echo
+    echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}${CYAN}║  Zscaler requires acknowledgment before this traffic is allowed  ║${RESET}"
+    echo -e "${BOLD}${CYAN}╠══════════════════════════════════════════════════════════════════╣${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}                                                                  ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}  Open this URL in your browser and accept:                       ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}  ${YELLOW}${splash_url}${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}                                                                  ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}  Reason to give (if prompted): \"Developer environment setup\"    ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}                                                                  ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}  After accepting, return to this terminal and press ENTER        ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}  to continue.                                                    ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}║${RESET}                                                                  ${BOLD}${CYAN}║${RESET}"
+    echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════════════╝${RESET}"
+    echo
+    # Auto-open in default browser on Linux (only in interactive TTY sessions)
+    if [[ -t 1 ]]; then
+        xdg-open "$splash_url" 2>/dev/null || true
+        info "Opened $splash_url in your default browser"
+    fi
+    echo -en "${CYAN}[→] Press ENTER after accepting in your browser... ${RESET}"
+    read -r _
+}
+
+# ── TLS preflight check ───────────────────────────────────────────────────────
+# Curls a well-known HTTPS endpoint and checks for:
+#   - curl exit 60: SSL cert verification failure (Zscaler intercepting, untrusted)
+#   - HTML response body: Zscaler/corporate acknowledgment splash page → try auto-accept
+# Returns:
+#   0  TLS clean — proceed
+#   1  SSL cert error or unrecoverable block — caller should invoke setup_zscaler_trust
+#   2  Splash page handled (auto-accepted or user manually accepted) — caller should re-run
+preflight_zscaler_check() {
+    local test_url="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+    local cookie_jar; cookie_jar="$(mktemp /tmp/zscaler-cookies-XXXXXX.txt)"
+    local curl_opts=(--proto '=https' --tlsv1.2 --max-time 15 -fsSL
+                     -c "$cookie_jar" -w '\n__EFFECTIVE_URL__%{url_effective}')
+    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+        curl_opts+=(--cacert "$CURL_CA_BUNDLE")
+
+    local raw exit_code=0
+    raw=$(curl "${curl_opts[@]}" "$test_url" 2>&1) || exit_code=$?
+
+    # Split write_out sentinel from body
+    local effective_url response
+    effective_url=$(printf '%s' "$raw" | grep '__EFFECTIVE_URL__' | sed 's/.*__EFFECTIVE_URL__//')
+    response=$(printf '%s' "$raw" | grep -v '__EFFECTIVE_URL__')
+    local splash_url="${effective_url:-$test_url}"
+
+    # curl exit 60 = SSL certificate problem — Zscaler not yet trusted
+    if [[ "$exit_code" -eq 60 ]]; then
+        rm -f "$cookie_jar"
+        warn "preflight: TLS certificate error (SSL verification failed)"
+        warn "preflight: Zscaler is intercepting HTTPS and the cert is not trusted yet"
+        return 1
+    fi
+
+    # Any other curl failure (network down, timeout, DNS)
+    if [[ "$exit_code" -ne 0 ]]; then
+        rm -f "$cookie_jar"
+        warn "preflight: curl failed (exit $exit_code) — network may be unavailable"
+        return 1
+    fi
+
+    # HTML response = Zscaler/corporate acknowledgment splash page
+    if printf '%s' "$response" | grep -qi "<html\|<title\|<!DOCTYPE"; then
+        warn "preflight: received HTML instead of a shell script"
+        warn "preflight: possible Zscaler acknowledgment page at: $splash_url"
+
+        if [[ "${TERMINAL_KNIFEROLL_ZSCALER_AUTO_ACCEPT:-1}" != "0" ]]; then
+            info "preflight: attempting automatic Zscaler form acceptance..."
+            if zscaler_attempt_auto_accept "$response" "$splash_url" "$cookie_jar"; then
+                ok "preflight: auto-accept posted — re-validating TLS..."
+                rm -f "$cookie_jar"
+                return 2  # signal caller to re-run preflight
+            fi
+            warn "preflight: auto-accept failed — falling back to manual prompt"
+        fi
+
+        rm -f "$cookie_jar"
+        zscaler_manual_prompt "$splash_url"
+        return 2  # user accepted in browser, caller re-runs preflight
+    fi
+
+    rm -f "$cookie_jar"
+
+    # Zscaler block-page body marker (no HTML wrapper)
+    if printf '%s' "$response" | grep -qi "zscaler\|zpa_block\|access denied by zscaler"; then
+        warn "preflight: Zscaler block-page marker in response body"
+        return 1
+    fi
+
+    ok "preflight: TLS validated — raw.githubusercontent.com reachable, no interception detected"
+    return 0
+}
+
+# ── Export all cert env vars for the current session ─────────────────────────
+_zscaler_export_env() {
+    local bundle="$1"
+    export CURL_CA_BUNDLE="$bundle"
+    export SSL_CERT_FILE="$bundle"
+    export GIT_SSL_CAINFO="$bundle"
+    export NODE_EXTRA_CA_CERTS="$bundle"
+    export REQUESTS_CA_BUNDLE="$bundle"
+    export AWS_CA_BUNDLE="$bundle"
+    export PIP_CERT="$bundle"
+    export ZSC_PEM="$bundle"
+}
+
+# ── Zscaler managed-device cert trust (Linux) ────────────────────────────────
+# Call AFTER preflight_zscaler_check returns non-zero.
+# Builds a combined CA bundle (system roots + Zscaler) and exports all
+# cert env vars so every subsequent curl/git/npm/pip/aws in this session
+# inherits them.
+#
+# Detection order (Linux-only — no macOS paths in this script):
+#   1. Previously built combined bundle  (fast path on re-run)
+#   2. Known Linux Zscaler cert paths
+#
+# Flags:
+#   --required   Die (exit non-zero) if no cert is found instead of returning 0.
+setup_zscaler_trust() {
+    local required=false
+    [[ "${1:-}" == "--required" ]] && required=true
+
+    local zsc_pem=""
+    local bundle_dir="$HOME/.config/terminal-kniferoll"
+    local combined_bundle="$bundle_dir/ca-bundle.pem"
+    mkdir -p "$bundle_dir"
+
+    # 1. Fast path — prior installer run already built the bundle
+    if [[ -s "$combined_bundle" ]]; then
+        _zscaler_export_env "$combined_bundle"
+        ok "Zscaler trust: using cached CA bundle"
+        return 0
+    fi
+
+    # 2. Known Linux Zscaler cert paths
+    local _candidate
+    for _candidate in \
+        "/usr/local/share/ca-certificates/zscaler.pem" \
+        "/usr/local/share/ca-certificates/zscaler.crt" \
+        "/etc/ssl/certs/zscaler.pem" \
+        "/usr/share/ca-certificates/zscaler.pem"
+    do
+        if [[ -s "$_candidate" ]]; then
+            zsc_pem="$_candidate"
+            info "Zscaler cert found: $zsc_pem"
+            break
+        fi
+    done
+
+    if [[ -z "$zsc_pem" ]]; then
+        if [[ "$required" == "true" ]]; then
+            err "Zscaler TLS interception detected but no Zscaler root cert was found."
+            err ""
+            err "Remediation — place the Zscaler root cert at:"
+            err "  /usr/local/share/ca-certificates/zscaler.pem"
+            err "Then run: sudo update-ca-certificates"
+            err "Then re-run: ./install_linux.sh"
+            die "Cannot continue without Zscaler root cert on a managed device"
+        fi
+        skip "No Zscaler cert detected — assuming standard TLS (non-managed device)"
+        return 0
+    fi
+
+    # Build combined bundle: system roots + Zscaler cert.
+    info "Building combined CA bundle for managed-device trust..."
+    local _tmp_bundle; _tmp_bundle="$(mktemp "$bundle_dir/ca-bundle-XXXXXX.pem")"
+    chmod 644 "$_tmp_bundle"
+    {
+        if [[ -f /etc/ssl/certs/ca-certificates.crt ]]; then
+            cat /etc/ssl/certs/ca-certificates.crt
+        elif [[ -f /etc/pki/tls/certs/ca-bundle.crt ]]; then
+            cat /etc/pki/tls/certs/ca-bundle.crt
+        fi
+        cat "$zsc_pem"
+    } > "$_tmp_bundle"
+    mv -f "$_tmp_bundle" "$combined_bundle"
+
+    _zscaler_export_env "$combined_bundle"
+    ok "Zscaler trust configured — $(wc -l < "$combined_bundle") cert lines in bundle"
+    quip "curl, git, npm, yarn, pip, aws cli will all trust this bundle in this session"
+}
+
 # ── Helper: apt single-package install (skip if present) ─────────────────────
 apt_install() {
     local check_bin="$1" pkg="$2" desc="${3:-$2}"
@@ -442,11 +734,9 @@ install_homebrew_and_gemini() {
     [[ -z "$brew_bin" ]] && is_installed "brew" && brew_bin="$(command -v brew)"
     if [[ -n "$brew_bin" ]]; then
         eval "$("$brew_bin" shellenv)"
-        # Single-quoted strings below are written literally to rc files and expand on source.
-        # shellcheck disable=SC2016
-        append_if_missing "$HOME/.zshrc"  'command -v brew >/dev/null && eval "$(brew shellenv)"'
-        # shellcheck disable=SC2016
-        append_if_missing "$HOME/.bashrc" 'command -v brew >/dev/null && eval "$(brew shellenv)"'
+        # Upsert brew shellenv block into rc files using the marker-based sweep.
+        # Replaces older bare eval "$(brew shellenv)" lines from previous installs.
+        sweep_brew_shellenv_files "" _brew_shellenv_block_linux
         run_optional "Updating Homebrew" brew update
         is_installed "gcc" || run_optional "Installing gcc via Homebrew" brew install gcc
         if ! is_installed "gemini"; then
@@ -589,6 +879,34 @@ show_menu() {
     esac
 }
 
+# ── TUI selector (bubbletea) — mirrors install_mac.sh ────────────────────────
+TUI_SELECTOR="$HOME/.terminal-kniferoll/bin/selector"
+
+build_tui_selector() {
+    local src="$SCRIPT_DIR/tui/selector"
+    [[ -d "$src" ]] || return 1
+    is_installed "go" || return 1
+    mkdir -p "$(dirname "$TUI_SELECTOR")"
+    # Rebuild if source is newer than binary
+    if [[ ! -x "$TUI_SELECTOR" || "$src/main.go" -nt "$TUI_SELECTOR" ]]; then
+        info "Building TUI selector..."
+        (cd "$src" && go mod tidy 2>/dev/null && \
+            go build -o "$TUI_SELECTOR" . 2>/dev/null) || return 1
+        ok "TUI selector built"
+    fi
+    return 0
+}
+
+run_tui_selector_linux() {
+    local output
+    output="$("$TUI_SELECTOR" --linux)"
+    while IFS='=' read -r key val; do
+        [[ -n "$key" ]] && declare -g "$key"="$val"
+    done <<< "$output"
+    # Map TUI keys → install_linux.sh variable names
+    # (TUI outputs INSTALL_SHELL, INSTALL_PROJECTOR directly — no remap needed)
+}
+
 # ── Flag parsing ──────────────────────────────────────────────────────────────
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
@@ -635,8 +953,292 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/supply_chain_guard.sh
 source "$SCRIPT_DIR/lib/supply_chain_guard.sh"
 
-# shellcheck source=scripts/lib/sweep-zscaler.sh
-source "$SCRIPT_DIR/scripts/lib/sweep-zscaler.sh"
+# ── RC file sweep utilities (inlined) ────────────────────────────────────────
+
+_zscaler_source_block() {
+    printf '%s\n' \
+        '# BEGIN terminal-kniferoll zscaler — DO NOT EDIT (managed by installer)' \
+        '[ -r "$HOME/.config/terminal-kniferoll/zscaler-env.sh" ] && \' \
+        '    . "$HOME/.config/terminal-kniferoll/zscaler-env.sh"' \
+        '# END terminal-kniferoll zscaler'
+}
+
+backup_rc_file() {
+    local rc="$1"
+    [[ ! -f "$rc" ]] && return 0
+    local ts; ts="$(date '+%Y%m%d-%H%M%S')"
+    local backup="${rc}.terminal-kniferoll-backup-${ts}"
+    cp "$rc" "$backup"
+    chmod 600 "$backup"
+    local dir base
+    dir="$(dirname "$rc")"
+    base="$(basename "$rc")"
+    ls -t "${dir}/${base}.terminal-kniferoll-backup-"* 2>/dev/null | \
+        tail -n +6 | while IFS= read -r _old; do rm -f "$_old"; done
+    ok "  backup: $backup"
+}
+
+strip_zscaler_regions() {
+    local file="$1"
+    local result
+    if result="$(awk '
+function is_region_trigger(line) {
+    if (line ~ /^[[:space:]]*(ZSC_PEM_LINUX|ZSC_PEM_MAC|ZSC_PEM)[[:space:]]*=/) return 1
+    if (line ~ /^[[:space:]]*export[[:space:]]+(ZSC_PEM|CURL_CA_BUNDLE|GIT_SSL_CAINFO|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|NODE_EXTRA_CA_CERTS|AWS_CA_BUNDLE|PIP_CERT|HOMEBREW_CURLOPT_CACERT)[[:space:]]*=/) return 1
+    return 0
+}
+function is_marker_begin(line) {
+    return (line ~ /^[[:space:]]*#[[:space:]]*BEGIN[[:space:]]+terminal-kniferoll[[:space:]]+zscaler/)
+}
+function is_marker_end(line) {
+    return (line ~ /^[[:space:]]*#[[:space:]]*END[[:space:]]+terminal-kniferoll[[:space:]]+zscaler/)
+}
+function is_zsc_extend(line) {
+    return (line ~ /^[[:space:]]*#.*[Zz]scaler/ && !is_marker_begin(line) && !is_marker_end(line))
+}
+function is_blank(line) { return (line ~ /^[[:space:]]*$/) }
+function is_control_open(line) {
+    if (line ~ /^[[:space:]]*(if|for|while|until|case)[[:space:]([]/) return 1
+    if (line ~ /^[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[({]/) return 1
+    if (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*(\{|$)/) return 1
+    if (line ~ /^[[:space:]]*\{[[:space:]]*(#.*)?$/) return 1
+    return 0
+}
+function is_control_close(line) {
+    if (line ~ /^[[:space:]]*(fi|esac|done)[[:space:]]*(;[[:space:]]*(#.*)?)?$/) return 1
+    if (line ~ /^[[:space:]]*\}[[:space:]]*(#.*)?$/) return 1
+    return 0
+}
+BEGIN { in_region=0; in_marker=0; depth=0; rstart=0; pend_buf=""; pend_cnt=0 }
+{
+    line = $0
+    if (!in_region) {
+        if (depth == 0) {
+            if (is_marker_begin(line)) {
+                in_region=1; in_marker=1; rstart=NR; pend_buf=""; pend_cnt=0; next
+            }
+            if (is_region_trigger(line)) {
+                in_region=1; in_marker=0; rstart=NR; pend_buf=""; pend_cnt=0; next
+            }
+        }
+        if (is_control_open(line)) depth++
+        else if (is_control_close(line) && depth > 0) depth--
+        print line; next
+    }
+    if (in_marker) {
+        if (is_marker_end(line)) {
+            print "REGION " rstart " " NR > "/dev/stderr"
+            in_region=0; in_marker=0
+        }
+        next
+    }
+    if (is_blank(line)) { pend_buf = pend_buf line "\n"; pend_cnt++; next }
+    if (depth > 0) {
+        if (is_control_open(line)) depth++
+        else if (is_control_close(line) && depth > 0) depth--
+        pend_buf=""; pend_cnt=0; next
+    }
+    if (is_region_trigger(line) || is_zsc_extend(line)) { pend_buf=""; pend_cnt=0; next }
+    if (is_control_open(line)) { pend_buf=""; pend_cnt=0; depth++; next }
+    print "REGION " rstart " " (NR - 1 - pend_cnt) > "/dev/stderr"
+    in_region=0
+    if (pend_cnt > 0) { printf "%s", pend_buf; pend_buf=""; pend_cnt=0 }
+    if (is_marker_begin(line)) {
+        in_region=1; in_marker=1; rstart=NR; pend_buf=""; pend_cnt=0; next
+    }
+    if (is_region_trigger(line)) {
+        in_region=1; in_marker=0; rstart=NR; pend_buf=""; pend_cnt=0; next
+    }
+    if (is_control_open(line)) depth++
+    else if (is_control_close(line) && depth > 0) depth--
+    print line
+}
+END {
+    if (in_region) {
+        print "REGION " rstart " " NR > "/dev/stderr"
+    } else if (pend_cnt > 0) {
+        printf "%s", pend_buf
+    }
+}
+' "$file" 2>/tmp/sweep-awk-err$$)"; then
+        printf '%s\n' "$result"
+    else
+        warn "sweep-zscaler (inline) error ($file): $(head -1 /tmp/sweep-awk-err$$)"
+        rm -f /tmp/sweep-awk-err$$
+        cat "$file"
+        return 1
+    fi
+    rm -f /tmp/sweep-awk-err$$
+}
+
+_has_zscaler_block() {
+    grep -Eq \
+        'ZSC_PEM_LINUX[[:space:]]*=|ZSC_PEM_MAC[[:space:]]*=|^[[:space:]]*unset[[:space:]]+ZSC_PEM|^[[:space:]]*(export[[:space:]]+)?ZSC_PEM[[:space:]]*=|^[[:space:]]*export[[:space:]]+(CURL_CA_BUNDLE|SSL_CERT_FILE|REQUESTS_CA_BUNDLE|NODE_EXTRA_CA_CERTS|GIT_SSL_CAINFO|AWS_CA_BUNDLE|PIP_CERT|HOMEBREW_CURLOPT_CACERT)[[:space:]]*=|# BEGIN terminal-kniferoll zscaler' \
+        "$1" 2>/dev/null
+}
+
+_show_sweep_preview() {
+    local rc="$1" dry="${2:-}"
+    local lines_before lines_after removed_count
+    lines_before=$(wc -l < "$rc")
+    lines_after=$(strip_zscaler_regions "$rc" | wc -l)
+    removed_count=$(( lines_before - lines_after ))
+    if [[ -n "$dry" ]]; then
+        info "  [dry-run] sweep: $rc"
+    else
+        info "  sweep: $rc"
+    fi
+    [[ $removed_count -gt 0 ]] && \
+        info "  - removing ~${removed_count} lines (old Zscaler block)"
+    info "  + appending 4 lines (new marker block)"
+}
+
+upsert_rc_zscaler_block() {
+    local rc="$1" dry="${2:-}"
+    [[ ! -f "$rc" ]] && return 0
+    local _blk; _blk="$(mktemp)"
+    _zscaler_source_block > "$_blk"
+    if _has_zscaler_block "$rc"; then
+        _show_sweep_preview "$rc" "$dry"
+        [[ -n "$dry" ]] && { rm -f "$_blk"; return 0; }
+        local _stripped; _stripped="$(mktemp)"; chmod 600 "$_stripped"
+        strip_zscaler_regions "$rc" > "$_stripped"
+        local _tmp; _tmp="$(mktemp)"; chmod 600 "$_tmp"
+        local _stripped_content
+        _stripped_content="$(cat "$_stripped")"
+        if [[ -n "$_stripped_content" ]]; then
+            { printf '%s\n' "$_stripped_content"; echo; cat "$_blk"; } > "$_tmp"
+        else
+            cat "$_blk" > "$_tmp"
+        fi
+        if cmp -s "$_tmp" "$rc"; then
+            rm -f "$_stripped" "$_tmp" "$_blk"
+            ok "$rc: Zscaler block already canonical — no backup needed"
+            return 0
+        fi
+        backup_rc_file "$rc"
+        mv -f "$_tmp" "$rc"
+        rm -f "$_stripped"
+        ok "$rc: Zscaler block(s) swept, source block appended"
+    else
+        [[ -n "$dry" ]] && {
+            info "  [dry-run] $rc: no Zscaler block found — would append marker"
+            rm -f "$_blk"; return 0
+        }
+        backup_rc_file "$rc"
+        local _tmp; _tmp="$(mktemp)"; chmod 600 "$_tmp"
+        { cat "$rc"; echo; cat "$_blk"; } > "$_tmp"
+        mv -f "$_tmp" "$rc"
+        ok "$rc: Zscaler source block appended"
+    fi
+    rm -f "$_blk"
+}
+
+sweep_rc_files() {
+    local dry=""
+    [[ "${1:-}" == "--dry-run" ]] && dry="1"
+    banner "ZSCALER RC SWEEP${dry:+ (DRY RUN)}"
+    local _rc
+    for _rc in \
+        "$HOME/.zshrc" \
+        "$HOME/.zprofile" \
+        "$HOME/.bashrc" \
+        "$HOME/.bash_profile" \
+        "$HOME/.profile"
+    do
+        [[ -f "$_rc" ]] && upsert_rc_zscaler_block "$_rc" "$dry"
+    done
+    unset _rc
+}
+
+_brew_shellenv_block() {
+    cat << 'BSEOF'
+# BEGIN terminal-kniferoll brew-shellenv — DO NOT EDIT (managed by installer)
+if [[ -x "/opt/homebrew/bin/brew" ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [[ -x "/usr/local/bin/brew" ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+# END terminal-kniferoll brew-shellenv
+BSEOF
+}
+
+_brew_shellenv_block_linux() {
+    cat << 'BSEOF'
+# BEGIN terminal-kniferoll brew-shellenv — DO NOT EDIT (managed by installer)
+if [[ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+elif [[ -x "$HOME/.linuxbrew/bin/brew" ]]; then
+    eval "$($HOME/.linuxbrew/bin/brew shellenv)"
+fi
+# END terminal-kniferoll brew-shellenv
+BSEOF
+}
+
+_strip_brew_shellenv_regions() {
+    local file="$1"
+    awk '
+        /# BEGIN terminal-kniferoll brew-shellenv/ { skip=1; next }
+        /# END terminal-kniferoll brew-shellenv/   { skip=0; next }
+        skip                                        { next }
+        /eval[[:space:]]+"?\$\(.*brew shellenv/    { next }
+        { print }
+    ' "$file"
+}
+
+_has_brew_shellenv_block() {
+    grep -Eq \
+        'eval[[:space:]]+"?\$\(.*brew[[:space:]]+shellenv|# BEGIN terminal-kniferoll brew-shellenv' \
+        "$1" 2>/dev/null
+}
+
+upsert_brew_shellenv_block() {
+    local rc="$1" dry="${2:-}" block_fn="${3:-_brew_shellenv_block}"
+    [[ ! -f "$rc" ]] && return 0
+    local _blk; _blk="$(mktemp)"; chmod 600 "$_blk"
+    "$block_fn" > "$_blk"
+    local _clean; _clean="$(mktemp)"; chmod 600 "$_clean"
+    local _final; _final="$(mktemp)"; chmod 600 "$_final"
+    _strip_brew_shellenv_regions "$rc" > "$_clean"
+    local _clean_content
+    _clean_content="$(cat "$_clean")"
+    rm -f "$_clean"
+    if [[ -n "$_clean_content" ]]; then
+        { printf '%s\n' "$_clean_content"; echo; cat "$_blk"; } > "$_final"
+    else
+        cat "$_blk" > "$_final"
+    fi
+    rm -f "$_blk"
+    if cmp -s "$_final" "$rc"; then
+        rm -f "$_final"
+        return 0
+    fi
+    if [[ -n "$dry" ]]; then
+        info "  [dry-run] sweep (brew-shellenv): $rc"
+        rm -f "$_final"
+        return 0
+    fi
+    backup_rc_file "$rc"
+    mv -f "$_final" "$rc"
+    ok "$rc: brew-shellenv block upserted"
+}
+
+sweep_brew_shellenv_files() {
+    local dry="" block_fn="${2:-_brew_shellenv_block}"
+    [[ "${1:-}" == "--dry-run" ]] && dry="1"
+    banner "BREW SHELLENV RC SWEEP${dry:+ (DRY RUN)}"
+    local _rc
+    for _rc in \
+        "$HOME/.zshrc" \
+        "$HOME/.zprofile" \
+        "$HOME/.bashrc" \
+        "$HOME/.bash_profile" \
+        "$HOME/.profile"
+    do
+        [[ -f "$_rc" ]] && upsert_brew_shellenv_block "$_rc" "$dry" "$block_fn"
+    done
+    unset _rc
+}
 
 # ── Split-terminal UI (tk-022) ────────────────────────────────────────────────
 # shellcheck source=lib/split_terminal.sh
@@ -654,9 +1256,21 @@ echo -e "${RESET}"
 quip "Log: $LOG_FILE"
 echo
 
-# ── Show menu or use defaults ─────────────────────────────────────────────────
+# ── Install Go early if not present (needed to build TUI selector) ────────────
+# On first run Go isn't installed yet → TUI falls back to the text menu below.
+# On subsequent runs (after Go was installed in the main loop) TUI builds fast.
+if ! is_installed "go" && command -v apt-get &>/dev/null; then
+    # Quick quiet attempt — failure is non-fatal (we fall back to text menu).
+    "$SUDO" apt-get install -y -q golang-go 2>/dev/null || true
+fi
+
+# ── Show TUI or fallback text menu ───────────────────────────────────────────
 if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
-    show_menu
+    if build_tui_selector && [[ -x "$TUI_SELECTOR" ]]; then
+        run_tui_selector_linux
+    else
+        show_menu
+    fi
 fi
 
 # ── Initialise split-terminal UI (tk-022) ────────────────────────────────────
@@ -673,6 +1287,52 @@ info "Supply chain: strict (TLS enforced, hashes verified where available)"
 
 # ── sudo keepalive (non-root only) ────────────────────────────────────────────
 [[ "$EUID" -ne 0 ]] && check_sudo
+
+# ── TLS preflight + Zscaler trust (hard gate) ────────────────────────────────
+# Proceeding with a broken TLS stack would silently corrupt every download.
+# preflight_zscaler_check exit codes:
+#   0 — clean, proceed
+#   1 — SSL cert error → run setup_zscaler_trust --required
+#   2 — HTML splash page handled (auto-accept or manual) → re-run preflight
+banner "TLS PREFLIGHT"
+_preflight_rc=0
+preflight_zscaler_check || _preflight_rc=$?
+
+if [[ "$_preflight_rc" -eq 2 ]]; then
+    # Splash page was accepted (auto or manual) — re-validate once
+    info "Re-validating TLS after Zscaler acknowledgment..."
+    _preflight_rc=0
+    preflight_zscaler_check || _preflight_rc=$?
+    if [[ "$_preflight_rc" -ne 0 ]]; then
+        die "TLS still blocked after Zscaler acceptance — check $LOG_FILE"
+    fi
+fi
+
+if [[ "$_preflight_rc" -eq 1 ]]; then
+    banner "MANAGED DEVICE SETUP — REQUIRED"
+    info "TLS interception detected — configuring Zscaler cert trust before proceeding"
+    setup_zscaler_trust --required
+
+    info "Re-validating TLS after trust setup..."
+    _preflight_rc=0
+    preflight_zscaler_check || _preflight_rc=$?
+    if [[ "$_preflight_rc" -ne 0 ]]; then
+        err "TLS validation failed even after Zscaler cert trust was configured."
+        err ""
+        err "Possible causes:"
+        err "  - The Zscaler cert bundle is incomplete or expired"
+        err "  - A different corporate proxy is intercepting (not Zscaler)"
+        err "  - Network connectivity issue (VPN not connected?)"
+        err ""
+        err "Log: $LOG_FILE"
+        die "TLS still broken after trust setup — aborting install"
+    fi
+    ok "TLS re-validated — all subsequent curl/git installs will use the Zscaler CA bundle"
+else
+    # Opportunistic cert detection: wire up env vars for tool configuration
+    # even on non-managed devices that happen to have a Zscaler cert present.
+    setup_zscaler_trust
+fi
 
 # ── Evict tools removed from this project ─────────────────────────────────────
 banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
@@ -865,9 +1525,18 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
 
     # pip upgrade + TLS smoke test
-    local _py3; _py3="$(command -v python3 || true)"
+    # 'local' is only valid inside a function; use plain assignment here.
+    _py3="$(command -v python3 || true)"
     if [[ -n "$_py3" ]]; then
-        run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip
+        # PEP 668 (Debian 11+, Homebrew Python): pip upgrade is managed by the
+        # system package manager.  Detect the EXTERNALLY-MANAGED sentinel and
+        # skip rather than using --break-system-packages.
+        _py3_stdlib="$("$_py3" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))' 2>/dev/null || true)"
+        if [[ -n "$_py3_stdlib" && -f "$(dirname "$_py3_stdlib")/EXTERNALLY-MANAGED" ]]; then
+            skip "pip upgrade — Python is externally-managed (PEP 668); package manager owns pip"
+        else
+            run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip
+        fi
         run_optional "Python TLS smoke test (ssl.create_default_context)" \
             "$_py3" -c "import ssl; ssl.create_default_context().load_default_certs(); print('SSL OK')"
     fi
@@ -933,11 +1602,33 @@ fi
 write_zscaler_env_file
 sweep_rc_files
 
+# ── BREW SHELLENV RC SWEEP (idempotent; re-run in case brew was just installed)
+if is_installed "brew" || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]] || \
+   [[ -x "$HOME/.linuxbrew/bin/brew" ]]; then
+    sweep_brew_shellenv_files "" _brew_shellenv_block_linux
+fi
+
 trap - ERR  # all failures captured in FAILED_TOOLS — no more ERR trap needed
 st_cleanup  # tear down split-terminal UI before printing summary (tk-022)
 sc_process_deferred
 print_summary
 sc_summary
+
+# ── Brew login-shell verification ─────────────────────────────────────────────
+_brew_login_path="$(
+    /bin/zsh  -l -c 'command -v brew' 2>/dev/null || \
+    /bin/bash -l -c 'command -v brew' 2>/dev/null || true
+)"
+if [[ -n "$_brew_login_path" ]]; then
+    ok "brew verification: findable from a clean login shell (${_brew_login_path})"
+elif is_installed "brew" || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]]; then
+    warn "brew is installed but NOT findable from a clean login shell"
+    warn "Add to ~/.bashrc / ~/.zshrc manually:"
+    warn '  if [[ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]]; then'
+    warn '      eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"'
+    warn '  fi'
+fi
+
 echo -e "${BOLD}${CYAN}>>> mission complete. knives sharp. out.${RESET}"
 echo -e "${DIM}    Reminder: run 'chsh -s \$(which zsh)' to set Zsh as default shell.${RESET}"
 echo -e "${DIM}    Reminder: source ~/.cargo/env or restart your shell for Rust tools.${RESET}"
