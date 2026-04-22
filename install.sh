@@ -49,6 +49,8 @@ case "$OS_TYPE" in
         bash "$SCRIPT_DIR/install_mac.sh" "$@"
         ;;
     MINGW*|MSYS*|CYGWIN*)
+        # NOTE: install.sh requires Git Bash / MSYS2 on Windows (uname must exist).
+        # From native PowerShell, run install_windows.ps1 directly instead.
         echo -e "[*] Detected Windows (Git Bash/MSYS2). Delegating to install_windows.ps1..."
         powershell.exe -ExecutionPolicy Bypass -File "$SCRIPT_DIR/install_windows.ps1" "$@"
         ;;
