@@ -1209,7 +1209,7 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
         # PEP 668 (Homebrew Python, macOS system Python): pip upgrade may be
         # managed externally.  Detect the sentinel and skip the upgrade.
         _py3_stdlib="$("$_py3" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))' 2>/dev/null || true)"
-        if [[ -n "$_py3_stdlib" && -f "$(dirname "$_py3_stdlib")/EXTERNALLY-MANAGED" ]]; then
+        if [[ -n "$_py3_stdlib" && -f "$_py3_stdlib/EXTERNALLY-MANAGED" ]]; then
             skip "pip upgrade — Python is externally-managed (PEP 668); package manager owns pip"
         else
             run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip

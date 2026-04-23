@@ -1532,7 +1532,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         # system package manager.  Detect the EXTERNALLY-MANAGED sentinel and
         # skip rather than using --break-system-packages.
         _py3_stdlib="$("$_py3" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))' 2>/dev/null || true)"
-        if [[ -n "$_py3_stdlib" && -f "$(dirname "$_py3_stdlib")/EXTERNALLY-MANAGED" ]]; then
+        if [[ -n "$_py3_stdlib" && -f "$_py3_stdlib/EXTERNALLY-MANAGED" ]]; then
             skip "pip upgrade — Python is externally-managed (PEP 668); package manager owns pip"
         else
             run_optional "Upgrading pip" "$_py3" -m pip install --upgrade pip
