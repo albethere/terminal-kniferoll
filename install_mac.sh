@@ -548,36 +548,10 @@ show_help() {
     echo "  --interactive    Force interactive menu"
     echo "  --help           Show this help message and exit"
     echo ""
-    echo "Default: shows grouped TUI (TTY) or full install (non-TTY)."
+    echo "Default: shows install menu (TTY) or full install (non-TTY)."
 }
 
-# ── TUI selector (bubbletea) ──────────────────────────────────────────────────
-TUI_SELECTOR="$HOME/.terminal-kniferoll/bin/selector"
-
-build_tui_selector() {
-    local src="$SCRIPT_DIR/tui/selector"
-    [[ -d "$src" ]] || return 1
-    is_installed "go" || return 1
-    mkdir -p "$(dirname "$TUI_SELECTOR")"
-    # Rebuild if source is newer than binary
-    if [[ ! -x "$TUI_SELECTOR" || "$src/main.go" -nt "$TUI_SELECTOR" ]]; then
-        info "Building TUI selector..."
-        (cd "$src" && go mod tidy 2>/dev/null && \
-            go build -o "$TUI_SELECTOR" . 2>/dev/null) || return 1
-        ok "TUI selector built"
-    fi
-    return 0
-}
-
-run_tui_selector() {
-    local output
-    output="$("$TUI_SELECTOR" --mac)"
-    while IFS='=' read -r key val; do
-        [[ -n "$key" ]] && declare -g "$key"="$val"
-    done <<< "$output"
-}
-
-# ── Fallback bash menu ────────────────────────────────────────────────────────
+# ── Install menu ──────────────────────────────────────────────────────────────
 show_custom_menu() {
     echo -e "\n${BOLD}${CYAN}[ CUSTOM — select tool groups ]${RESET}\n"
     ask_yes_no "  Shell environment (Zsh, Oh My Zsh, plugins, configs)?" \
@@ -1049,18 +1023,9 @@ if _brew_is_installed; then
     sweep_brew_shellenv_files
 fi
 
-# ── Install Go early (needed to build TUI selector) ──────────────────────────
-if ! is_installed "go" && is_installed "brew"; then
-    run_optional "Installing Go (TUI prerequisite)" brew install go
-fi
-
-# ── Show TUI or fallback menu ─────────────────────────────────────────────────
+# ── Show install menu ─────────────────────────────────────────────────────────
 if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
-    if build_tui_selector && [[ -x "$TUI_SELECTOR" ]]; then
-        run_tui_selector
-    else
-        show_menu
-    fi
+    show_menu
 fi
 
 info "Supply chain: strict (TLS enforced, hashes verified where available)"
