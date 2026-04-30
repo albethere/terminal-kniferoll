@@ -879,34 +879,6 @@ show_menu() {
     esac
 }
 
-# ── TUI selector (bubbletea) — mirrors install_mac.sh ────────────────────────
-TUI_SELECTOR="$HOME/.terminal-kniferoll/bin/selector"
-
-build_tui_selector() {
-    local src="$SCRIPT_DIR/tui/selector"
-    [[ -d "$src" ]] || return 1
-    is_installed "go" || return 1
-    mkdir -p "$(dirname "$TUI_SELECTOR")"
-    # Rebuild if source is newer than binary
-    if [[ ! -x "$TUI_SELECTOR" || "$src/main.go" -nt "$TUI_SELECTOR" ]]; then
-        info "Building TUI selector..."
-        (cd "$src" && go mod tidy 2>/dev/null && \
-            go build -o "$TUI_SELECTOR" . 2>/dev/null) || return 1
-        ok "TUI selector built"
-    fi
-    return 0
-}
-
-run_tui_selector_linux() {
-    local output
-    output="$("$TUI_SELECTOR" --linux)"
-    while IFS='=' read -r key val; do
-        [[ -n "$key" ]] && declare -g "$key"="$val"
-    done <<< "$output"
-    # Map TUI keys → install_linux.sh variable names
-    # (TUI outputs INSTALL_SHELL, INSTALL_PROJECTOR directly — no remap needed)
-}
-
 # ── Flag parsing ──────────────────────────────────────────────────────────────
 INSTALL_SHELL=true
 INSTALL_PROJECTOR=true
@@ -1256,21 +1228,9 @@ echo -e "${RESET}"
 quip "Log: $LOG_FILE"
 echo
 
-# ── Install Go early if not present (needed to build TUI selector) ────────────
-# On first run Go isn't installed yet → TUI falls back to the text menu below.
-# On subsequent runs (after Go was installed in the main loop) TUI builds fast.
-if ! is_installed "go" && command -v apt-get &>/dev/null; then
-    # Quick quiet attempt — failure is non-fatal (we fall back to text menu).
-    "$SUDO" apt-get install -y -q golang-go 2>/dev/null || true
-fi
-
-# ── Show TUI or fallback text menu ───────────────────────────────────────────
+# ── Show install menu ────────────────────────────────────────────────────────
 if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interactive" ]]; }; then
-    if build_tui_selector && [[ -x "$TUI_SELECTOR" ]]; then
-        run_tui_selector_linux
-    else
-        show_menu
-    fi
+    show_menu
 fi
 
 # ── Initialise split-terminal UI (tk-022) ────────────────────────────────────
