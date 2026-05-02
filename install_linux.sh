@@ -8,7 +8,17 @@
 # =============================================================================
 
 set -Eeuo pipefail
+
+# ── Non-interactive package manager defaults ──────────────────────────────────
+# DEBIAN_FRONTEND alone is not enough: dpkg-reconfigure invoked from postinst
+# scripts ignores it unless DEBCONF_NONINTERACTIVE_SEEN is also true. On Ubuntu
+# 22.04+ needrestart will additionally prompt about service restarts unless
+# explicitly muzzled. Set all three so any apt invocation is genuinely silent
+# regardless of which package's postinst is misbehaving.
 export DEBIAN_FRONTEND=noninteractive
+export DEBCONF_NONINTERACTIVE_SEEN=true
+export NEEDRESTART_MODE=a       # auto-apply service restarts instead of prompting
+export NEEDRESTART_SUSPEND=1    # belt-and-suspenders: skip needrestart entirely
 
 # ── TTY-guarded color palette ─────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -472,19 +482,20 @@ apt_batch() {
 }
 
 # ── Helper: nmap install with debconf pre-seeding (tk-021) ───────────────────
-# wireshark-common triggers an interactive debconf prompt ("Should non-superusers
-# capture packets?") that blocks unattended installs.  Pre-seeding + a hard
-# timeout + --no-install-recommends keeps this safe and non-blocking.
+# DEBIAN_FRONTEND=noninteractive (set globally) handles the "is this a hang or
+# not" question. The preseed below is OPINIONATED: we explicitly set
+# wireshark-common/install-setuid=false rather than accept the package default,
+# so non-root users on this machine cannot capture raw packets via dumpcap.
+# This is a security choice, not a hang-prevention.
 _nmap_safe_install() {
     if is_installed "nmap" || dpkg -s nmap &>/dev/null 2>&1; then
         skip "nmap already installed"; return 0
     fi
-    info "Pre-seeding debconf for wireshark-common (prevents interactive hang)..."
+    info "Pre-seeding wireshark-common/install-setuid=false (security choice)..."
     echo 'wireshark-common wireshark-common/install-setuid boolean false' | \
         sudo debconf-set-selections 2>/dev/null || true
     info "Installing nmap (timeout 120s, no recommended extras)..."
-    if DEBIAN_FRONTEND=noninteractive \
-        timeout 120 sudo apt-get install -y --fix-missing -q \
+    if timeout 120 sudo apt-get install -y --fix-missing -q \
             --no-install-recommends nmap 2>&1 | \
             grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
         ok "nmap installed"
