@@ -1319,7 +1319,7 @@ fi
 if [[ "$DO_FONTS" == "true" ]]; then
     FONT_DIR="$HOME/Library/Fonts"
     NERD_FONTS=(
-        Iosevka Hack UbuntuMono JetBrainsMono 3270
+        Iosevka IosevkaTerm Hack UbuntuMono JetBrainsMono 3270
         FiraCode CascadiaCode VictorMono Mononoki
         SpaceMono SourceCodePro Meslo GeistMono
     )
