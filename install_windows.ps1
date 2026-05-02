@@ -1789,6 +1789,15 @@ if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
     }
 }
 
+# ---- starship (installed but DISABLED -- oh-my-posh is the active prompt) ---
+# Two prompts cannot coexist: the second `Invoke-Expression` wins silently and
+# the first one wastes startup. To switch from oh-my-posh to starship, comment
+# out the oh-my-posh block ABOVE and uncomment the line below.
+#
+# if (Get-Command starship -ErrorAction SilentlyContinue) {
+#     Invoke-Expression (&starship init powershell)
+# }
+
 # ---- PSReadLine (autosuggest + history search + colors) ---------------------
 if (Get-Module -ListAvailable PSReadLine) {
     Import-Module PSReadLine
