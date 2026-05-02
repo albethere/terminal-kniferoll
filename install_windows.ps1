@@ -1727,7 +1727,7 @@ function Install-ShellExperience {
     if (Test-Cmd oh-my-posh) {
         Write-Section "Nerd Fonts (via oh-my-posh)"
         $nerdFonts = @(
-            'CascadiaCode','Meslo','JetBrainsMono','FiraCode','Hack',
+            'CascadiaCode','Meslo','JetBrainsMono','FiraCode','Hack','IosevkaTerm',
             'UbuntuMono','SourceCodePro','VictorMono','Mononoki','GeistMono'
         )
         foreach ($nf in $nerdFonts) {

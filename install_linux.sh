@@ -1554,7 +1554,7 @@ if [[ "$DO_PROJECTOR" == "true" ]]; then
     # ── Nerd Fonts ────────────────────────────────────────────────────────────
     FONT_DIR="$HOME/.local/share/fonts"
     NERD_FONTS=(
-        Iosevka Hack UbuntuMono JetBrainsMono 3270
+        Iosevka IosevkaTerm Hack UbuntuMono JetBrainsMono 3270
         FiraCode CascadiaCode VictorMono Mononoki
         SpaceMono SourceCodePro Meslo GeistMono
     )
