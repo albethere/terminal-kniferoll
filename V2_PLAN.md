@@ -132,7 +132,7 @@ Eight scripts. Four operating-system targets crossed with two security postures.
 | macOS (Apple Silicon, arm64) | managed | `silo-agent/kniferoll-managed-mac` | `install.sh` | Adds Zscaler/corp-CA detection, MDM-aware preflight, TLS-1.2 fallback. |
 | Windows 10/11 (x86_64) | unmanaged | `silo-agent/kniferoll-windows` | `install.ps1` | PowerShell 7+, winget primary, Scoop secondary. |
 | Windows 10/11 (x86_64) | managed | `silo-agent/kniferoll-managed-windows` | `install.ps1` | Adds corp-CA cert-store enumeration, `CARGO_HTTP_CAINFO`, group-policy-aware paths. |
-| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-deb` | `install.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. Hosts the canonical `lib/`. |
+| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-deb` | `install.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. |
 | Linux Debian/Ubuntu (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-deb` | `install.sh` | Adds Zscaler/corp-CA paths under `/usr/local/share/ca-certificates/`, internal-mirror toggle (off by default). |
 | Linux Arch-family (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-arch` | `install.sh` | pacman + AUR helper detection; CachyOS, EndeavourOS, Manjaro all welcome. |
 | Linux Arch-family (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-arch` | `install.sh` | Same as above plus corp posture. Edge case: rolling release means version pins are looser; documented. |
@@ -161,22 +161,31 @@ Each repo is `silo-agent/kniferoll-<os>` (unmanaged) or `silo-agent/kniferoll-ma
 
 ## 5. Repo strategy
 
-### 5.1 Layout (extant)
+### 5.1 Layout
 
-The eight repos exist under `silo-agent`. `albethere` has admin on all of them.
+Ten repos total: eight per-OS installer repos plus two coordination repos. The eight per-OS repos exist; the two coordination repos are scoped in §5b and to-be-created.
+
+**Per-OS repos (extant under `silo-agent`, `albethere` admin):**
 
 | Visibility | Repo | Posture |
 |------------|------|---------|
 | Public | `silo-agent/kniferoll-mac` | unmanaged |
 | Public | `silo-agent/kniferoll-windows` | unmanaged |
-| Public | `silo-agent/kniferoll-linux-deb` | unmanaged (also hosts the canonical `lib/`) |
+| Public | `silo-agent/kniferoll-linux-deb` | unmanaged |
 | Public | `silo-agent/kniferoll-linux-arch` | unmanaged |
 | Private | `silo-agent/kniferoll-managed-mac` | managed |
 | Private | `silo-agent/kniferoll-managed-windows` | managed |
 | Private | `silo-agent/kniferoll-managed-linux-deb` | managed |
 | Private | `silo-agent/kniferoll-managed-linux-arch` | managed |
 
-Inside each repo the entry script is `install.sh` (Unix repos) or `install.ps1` (Windows repos). The repo name disambiguates the OS and posture; the entry script doesn't need to repeat that information. A user runs:
+**Coordination repos (to be created — see §5b):**
+
+| Visibility | Repo | Role |
+|------------|------|------|
+| Public | `silo-agent/kniferoll-unpack` | Public-posture coordinator. Carries the user-facing `unpack` dispatcher AND the canonical shared `lib/`. |
+| Private | `silo-agent/kniferoll-managed-unpack` | Managed-posture coordinator. Carries the corp-flavored `unpack` dispatcher AND the managed-only `managed-lib/`. |
+
+Inside each per-OS repo the entry script is `install.sh` (Unix repos) or `install.ps1` (Windows repos). The repo name disambiguates the OS and posture; the entry script doesn't need to repeat that information. A user can either go through the unpack dispatcher (the OS-agnostic happy path, §5b.4) or clone the per-OS repo directly:
 
 ```
 git clone https://github.com/silo-agent/kniferoll-mac.git
@@ -203,21 +212,15 @@ The boundary rules below keep the public surface clean.
 - "If you are behind a corporate TLS-inspecting proxy, see the matching `kniferoll-managed-*` repo (private)."
 - Standard env vars (`CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, etc.) — these are documented features of upstream tools, not corporate secrets.
 
-The `lib/` inside `kniferoll-linux-deb` (see §5.3) is public and posture-agnostic. No function in it may take a corporate-shaped argument, depend on a corp environment variable, or hardcode a path under `/usr/local/share/ca-certificates/`. The lib provides neutral primitives that managed scripts compose with their corporate logic in the managed repos.
+The `lib/` inside `kniferoll-unpack` (see §5b) is public and posture-agnostic. No function in it may take a corporate-shaped argument, depend on a corp environment variable, or hardcode a path under `/usr/local/share/ca-certificates/`. The lib provides neutral primitives; managed-only utilities live in `kniferoll-managed-unpack/managed-lib/` and are composed on top of the public lib in the managed repos. The dependency direction is strict and one-way: public → public; private → public; never the reverse (§5b.3).
 
-### 5.3 Shared code reuse — vendored from `kniferoll-linux-deb`
+### 5.3 Shared code reuse
 
-The shared library lives at `kniferoll-linux-deb/lib/`. It contains posture-agnostic primitives: download-and-verify, the RC-block AWK state machine (modernized from v1's `scripts/lib/sweep-zscaler.awk`), log format, exit-code helpers, manifest writer, backup rotation, the per-script skeleton contract (`SKELETON.md`). Each tagged release of `kniferoll-linux-deb` is simultaneously the script at version X and the lib at version X.
+Shared library code lives in the two coordination repos: `silo-agent/kniferoll-unpack` (public, posture-agnostic primitives) and `silo-agent/kniferoll-managed-unpack` (private, managed-only utilities layered on top of the public ones). The eight per-OS repos consume these libraries via **git subtree**, with a `make sync-core` target in each consumer's `Makefile`. The §5b coordination layer covers the mechanics, the posture-isolation invariants, and the bootstrap UX in detail.
 
-The other seven repos consume the lib by **vendoring**: each repo commits a `lib/` directory (a snapshot of `kniferoll-linux-deb/lib/` at a specific tag) plus a `lib/.vendor` file that records `kniferoll-linux-deb@<tag>` and the SHA256 of the vendored tree. Bumping is two PRs: tag a release of `kniferoll-linux-deb`, then in each consumer repo regenerate `lib/` and `lib/.vendor` in a single commit.
+The short version: each per-OS repo carries a tracked subtree of the upstream `lib/` (and, for the managed four, a second subtree of `managed-lib/`); subtree pulls are squashed (`--squash`) so consumer histories stay flat; the merge commits make upstream provenance auditable in `git log` rather than via sidecar files; bumps are one PR per consumer that wants the update; consumers can land bumps independently with no batch coordination.
 
-Why vendoring rather than the alternatives:
-
-- **Submodules** require `git clone --recurse` and silently fail in air-gap or restricted-network environments. Vendoring works on a single shallow clone.
-- **Copy-on-update** (no machinery) drifts immediately and offers no audit trail.
-- **A 9th `silo-agent/kniferoll-core` repo** was considered and rejected. The argument for it is architectural symmetry — no script repo is privileged. The argument against is ceremony: the eight repos already exist, the lib is small, `kniferoll-linux-deb` is the reference implementation regardless, and creating a ninth repo to host code that has to live somewhere doesn't pay for itself today. If lib cadence later diverges meaningfully from the linux-deb script's release cadence, splitting `lib/` to `silo-agent/kniferoll-core` is the migration. It isn't this iteration's problem.
-
-Trade-offs accepted: `kniferoll-linux-deb` carries a dual identity (script + lib host). A lib-only fix nominally requires a linux-deb tag even if the linux-deb script isn't changing. The release-notes convention (see §5.4) distinguishes `lib-only` releases from combined ones, which is enough.
+A previous revision of this plan proposed hosting `lib/` inside `kniferoll-linux-deb` (the reference implementation), with vendoring into the other seven. That option is superseded by the coordination layer, which absorbs three responsibilities at once — bootstrap entry, shared lib hosting, and posture isolation enforcement — and avoids `kniferoll-linux-deb` carrying a dual identity it didn't need.
 
 ### 5.4 Branch and release conventions
 
@@ -226,10 +229,183 @@ Across all eight repos:
 - **Branches.** `main` is the only long-lived branch. Work happens on `feat/<short>` or `fix/<short>` branches, lands via PR, and the branch is deleted on merge. No long-lived feature branches. Branch protection on `main`: required PR review, required passing CI, no force-push.
 - **Tags.** Semver, `v`-prefixed (`v1.0.0`, `v1.1.0`). Each repo versions independently — `kniferoll-mac@v1.4.2` and `kniferoll-windows@v1.7.0` are normal. Tags are signed where the local environment supports it.
 - **Releases.** The four public repos use GitHub Releases for changelog visibility. The four private repos tag only; the script in the working tree at a given tag *is* the artifact.
-- **Lib bumps.** Tagging a release of `kniferoll-linux-deb` flags consumers to bump. Each consumer's bump is its own PR — `lib/` regenerated, `lib/.vendor` regenerated, one commit. Consumers can land bumps independently; no batch coordination required.
-- **Lib-only releases.** A `kniferoll-linux-deb` tag whose only change is in `lib/` is annotated `lib-only` in the release notes. The linux-deb script's user-visible behavior at that tag is unchanged from the prior tag.
+- **Lib bumps.** Tagging a release of `kniferoll-unpack` (or `kniferoll-managed-unpack`) flags consumers. Each consumer's bump is `make sync-core` followed by a one-PR merge — the subtree-pull squash commit records the sync, the working-tree diff is the actual change. Consumers land bumps independently; no batch coordination required.
 - **CI on PR.** Each public repo runs a smoke test on PR (preflight + `--dry-run` + `--check`) on a Debian, Arch, or macOS GitHub-hosted runner as appropriate. Private repos run the same smoke shape on internal runners.
-- **Cross-repo design changes.** A change to the per-script skeleton or log format starts as a PR to `kniferoll-linux-deb` updating `lib/` and `lib/SKELETON.md`, ships in a tagged release, and propagates as ordinary lib-bump PRs in each consumer repo.
+- **Cross-repo design changes.** A change to the per-script skeleton or log format starts as a PR to `kniferoll-unpack` updating `lib/` (and `lib/SKELETON.md`), ships in a tagged release, and propagates as ordinary `make sync-core` PRs in each consumer repo.
+
+---
+
+## 5b. Coordination layer
+
+The two coordination repos sit on top of the eight per-OS repos and absorb three responsibilities: user-facing bootstrap, shared library hosting, and posture isolation enforcement. The naming preserves the kitchen metaphor — "unpack" is what a chef does on arrival at a new station, opening their knife roll and laying out tools — and also literally describes what these repos do at install time.
+
+### 5b.1 Shape: bootstrap entry and shared library, in one repo per posture
+
+`kniferoll-unpack` (public) is both the user-facing entry point AND the canonical home of the shared library. Layout:
+
+```
+silo-agent/kniferoll-unpack/
+├── unpack                         # OS-detection dispatcher (bash)
+├── unpack.ps1                     # Windows PowerShell counterpart
+├── lib/                           # Canonical shared library
+│   ├── download_verify.sh
+│   ├── rc_sweep.awk
+│   ├── log_format.sh
+│   ├── manifest_writer.sh
+│   ├── exit_codes.sh
+│   ├── SKELETON.md                # Per-script skeleton contract
+│   └── VERSION                    # Human-readable upstream tag pointer
+├── docs/
+│   ├── ARCHITECTURE.md            # Canonical architecture doc
+│   ├── FLAVOR.md
+│   └── SUPPLY_CHAIN_RISK.md
+├── Makefile
+└── README.md                      # The de-facto project home page
+```
+
+`kniferoll-managed-unpack` (private) mirrors the shape with managed-only additions:
+
+```
+silo-agent/kniferoll-managed-unpack/
+├── unpack                         # Managed-flavored dispatcher (CA bundle preflight)
+├── unpack.ps1
+├── lib/                           # Subtree of kniferoll-unpack/lib (read-only consumer)
+├── managed-lib/                   # Managed-only utilities (canonical)
+│   ├── ca_detection.sh
+│   ├── ca_propagation.sh
+│   ├── mdm_probes.sh
+│   └── internal_repos.sh
+├── docs/
+│   └── managed-architecture.md    # Managed-specific architecture (private)
+├── Makefile
+└── README.md
+```
+
+Three options were considered. (a) pure bootstrap with no install logic leaves the lib homeless and forces a separate decision about where shared code lives. (b) shared library only leaves users without a single entry point and makes them figure out which per-OS repo to clone. (c) both — bootstrap script plus shared lib in one repo — gives the user one address (`kniferoll-unpack`), gives the shared lib a natural home, and keeps the per-OS repos runnable standalone for advanced users via direct cloning. Option (c) is the design.
+
+Per-OS repos remain valid standalone entry points. A user who knows what they want can `git clone https://github.com/silo-agent/kniferoll-mac && ./install.sh` and skip the dispatcher. The unpack repo's job is to make the OS-agnostic case ergonomic, not to be required.
+
+### 5b.2 Subtree mechanics
+
+Each consumer carries a `lib/` directory (and `managed-lib/` for the managed per-OS repos) that is a tracked git subtree of the upstream coordination repo. Updates pull via `make sync-core` — never a manual `cp -r`, never a submodule.
+
+For public per-OS repos (`kniferoll-mac`, `-windows`, `-linux-deb`, `-linux-arch`):
+
+```make
+.PHONY: sync-core
+sync-core:
+	git subtree pull --prefix=lib \
+		https://github.com/silo-agent/kniferoll-unpack main \
+		--squash -m "subtree: sync lib from kniferoll-unpack"
+```
+
+For managed per-OS repos (`kniferoll-managed-*`), two targets:
+
+```make
+.PHONY: sync-core
+sync-core: sync-public-lib sync-managed-lib
+
+.PHONY: sync-public-lib
+sync-public-lib:
+	git subtree pull --prefix=lib \
+		https://github.com/silo-agent/kniferoll-unpack main \
+		--squash -m "subtree: sync lib from kniferoll-unpack"
+
+.PHONY: sync-managed-lib
+sync-managed-lib:
+	git subtree pull --prefix=managed-lib \
+		https://github.com/silo-agent/kniferoll-managed-unpack main \
+		--squash -m "subtree: sync managed-lib from kniferoll-managed-unpack"
+```
+
+For `kniferoll-managed-unpack` itself (which subtrees the public lib into its own `lib/`):
+
+```make
+.PHONY: sync-core
+sync-core:
+	git subtree pull --prefix=lib \
+		https://github.com/silo-agent/kniferoll-unpack main \
+		--squash -m "subtree: sync lib from kniferoll-unpack"
+```
+
+Subtree over submodules: submodules require `git clone --recurse-submodules` and silently fail in air-gap or restricted-network environments. Subtree leaves a normal commit history that any clone gets fully and offline. Submodules across eight consumer repos pointing at one core repo also mean every core update is eight PRs *plus* eight submodule pointer updates; subtree collapses that to eight `make sync-core` PRs, period.
+
+Subtree over manual vendoring: subtree's merge commits put upstream provenance in `git log` rather than in a sidecar `.sha256` file. The `--squash` flag keeps the consumer's history flat — the merge commit records the sync, the per-file diffs are visible inside it, and the upstream's full history doesn't enter the consumer's log. A small `lib/VERSION` file inside the subtree records the upstream tag at last sync, for humans browsing without `git log` open.
+
+A core update is one PR per consumer that wants the bump — eight consumers in the worst case. There is no enforcement that all consumers must bump together; a stale consumer just runs older lib code, which is fine.
+
+### 5b.3 Posture isolation: strict one-way dependency
+
+`kniferoll-unpack` (public) NEVER subtree-pulls from `kniferoll-managed-unpack`. NEVER references its existence. NEVER has a code path that imports, sources, or depends on managed-side code. The public surface stands alone, fully audit-able without seeing the private side.
+
+`kniferoll-managed-unpack` (private) DOES subtree-pull from `kniferoll-unpack/lib/` (into its own `lib/`). Managed-only utilities live in `managed-lib/`. The dependency graph:
+
+```
+kniferoll-unpack (public)
+   │
+   ├──→ kniferoll-mac, kniferoll-windows, kniferoll-linux-deb, kniferoll-linux-arch
+   │       (subtree of lib/)
+   │
+   ├──→ kniferoll-managed-unpack
+   │       (subtree of lib/)
+   │
+   └──→ kniferoll-managed-mac, kniferoll-managed-windows,
+        kniferoll-managed-linux-deb, kniferoll-managed-linux-arch
+            (subtree of lib/, plus subtree of managed-lib/ from kniferoll-managed-unpack)
+```
+
+Why one-way: anything in the private repos may carry corporate assumptions — mirror URLs, MDM probe shapes, CA-bundle path layouts. Anything in the public repos is inspectable by anyone on the internet. If public depended on private, the public surface would carry whatever changes propagate from the private side, and the audit boundary would dissolve. One-way means the public side never reads the private side. The private side reads the public side, layers managed-only code on top, and ships the combined result to the four managed per-OS repos.
+
+The boundary is enforced by convention, not by tooling — there is no automatic check that `kniferoll-unpack` doesn't accidentally reference `kniferoll-managed-unpack`. CI in `kniferoll-unpack` includes a grep step that fails the build if any tracked file contains the word "managed-unpack" outside of explicit "see also" links in markdown. Cheap, effective, fail-loud.
+
+### 5b.4 Bootstrap UX
+
+**Unmanaged users** — the OS-agnostic happy path:
+
+```
+git clone https://github.com/silo-agent/kniferoll-unpack
+cd kniferoll-unpack
+./unpack
+```
+
+The `./unpack` script:
+1. Sources `lib/` (which is in this repo).
+2. Detects OS via `uname -s` (or `$IsWindows` for `unpack.ps1`).
+3. Resolves which per-OS repo to clone (`kniferoll-mac`, `-windows`, `-linux-deb`, `-linux-arch`).
+4. Clones it into a sibling directory (default) or the current working directory (`--here`).
+5. Execs that repo's `install.sh` / `install.ps1`, forwarding any flags.
+
+If the per-OS repo is already cached, `./unpack` updates it via `git pull --ff-only` before exec'ing. Idempotent: re-running `./unpack` after a successful install is safe (the per-OS install.sh is itself idempotent per §6.1).
+
+**Managed users** — same shape, but with hard preflight:
+
+```
+export KR_CA_BUNDLE=/path/to/corp-ca.pem      # if known; else auto-detect
+git clone https://github.com/silo-agent/kniferoll-managed-unpack
+cd kniferoll-managed-unpack
+./unpack
+```
+
+The managed `unpack` runs a hard preflight before any clone or exec: it sources `managed-lib/ca_detection.sh` and tries (in order) `$KR_CA_BUNDLE`, the auto-detect path list per OS, and an explicit `--ca-bundle PATH` flag. If none resolves to a readable PEM containing a corporate CA chain, `unpack` exits with code 5 and prints a remediation block — what file to provide, what env var to set, where corporate IT typically deposits the bundle on this OS. Only after the preflight passes does it clone the matching managed per-OS repo and exec its `install.sh` / `install.ps1`.
+
+**Standalone use (advanced, both postures):**
+
+The per-OS repos remain runnable standalone for users who know which they want:
+
+```
+# Unmanaged
+git clone https://github.com/silo-agent/kniferoll-mac
+cd kniferoll-mac
+./install.sh
+
+# Managed (still requires CA bundle, just bypasses the dispatcher)
+export KR_CA_BUNDLE=/path/to/corp-ca.pem
+git clone https://github.com/silo-agent/kniferoll-managed-mac
+cd kniferoll-managed-mac
+./install.sh
+```
+
+Each per-OS repo ships with `lib/` (and `managed-lib/` for managed) already vendored via subtree, so a fresh clone is fully self-contained — no second clone of the unpack repo required. The unpack dispatcher is a convenience for the OS-agnostic case, not a dependency.
 
 ---
 
@@ -244,7 +420,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **POSIX bash for Unix, PowerShell 7 for Windows.** No Python in the install path, no Go binary as a hard dependency, no third-party CLI required to run the installer. The Go TUI selector and the Python projector are post-install conveniences that live in their own packages.
 - **No dispatcher.** The v1 `install.sh` exists because the three platform scripts share a name and a directory; v2 puts each script in its own repo, so each repo's `install.sh` (or `install.ps1`) is unambiguously the one for that target. There is no universal entrypoint, and that is correct: there is no universal install.
 - **Configs are single-file canonical templates with no templating engine.** The Zsh and PowerShell profiles are written verbatim from the script. Variation is by env var or post-install user override, not by Jinja-shaped substitution.
-- **One log format, one exit-code table, one rollback model.** All eight scripts share these via the `lib/` shipped in `kniferoll-linux-deb` and vendored into the other seven. A user who has used `kniferoll-linux-deb` already understands the logs, exit codes, and rollback story of `kniferoll-managed-mac`.
+- **One log format, one exit-code table, one rollback model.** All eight per-OS scripts share these via the `lib/` subtreed from `kniferoll-unpack` (see §5b). A user who has used `kniferoll-linux-deb` already understands the logs, exit codes, and rollback story of `kniferoll-managed-mac`.
 - **Delete the supply-chain-guard framework.** The v1 abstraction allowed four risk modes but only ever shipped one. v2's rule is hardcoded: no curl-pipe-bash, ever, in any posture. If a tool can only be installed by piping a script, it does not get installed by kniferoll. Document the exception, do not engineer around it.
 
 ### 6.2 Security
@@ -256,7 +432,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
 - **No splash-page bypass.** v1 included logic to auto-parse and submit Zscaler splash-page forms (`install_mac.sh:175-257`). v2 deliberately removes this. Setting up a managed shell does not require automated consent-page traversal — if a splash page intercepts an install-time download, the script errors with exit code 5 and instructs the user to open the URL in their browser, accept the splash page, and re-run. Auto-clicking through corporate consent screens is the kind of impersonation that should never live in this tool, even when it's convenient and even when v1 had it.
 - **No silent overwrites of user dotfiles.** Every dotfile change creates a timestamped backup *and* prints the diff to stderr before applying. Dry-run mode prints the diff and does not apply.
-- **Audit trail.** Every install writes a manifest to `~/.kniferoll/state/<repo>-<isots>.json` (e.g., `kniferoll-managed-mac-2026-05-01T22-15-04Z.json`): tool name, version installed, source URL, SHA256 of downloaded artifact, install method, timestamp, exit status. A `kniferoll status` companion (shipped in `kniferoll-linux-deb/lib/` and vendored alongside `lib/` in every other repo) reads the most recent manifest and reports current state.
+- **Audit trail.** Every install writes a manifest to `~/.kniferoll/state/<repo>-<isots>.json` (e.g., `kniferoll-managed-mac-2026-05-02T01-15-04Z.json`): tool name, version installed, source URL, SHA256 of downloaded artifact, install method, timestamp, exit status. A `kniferoll status` companion (shipped in `kniferoll-unpack/lib/` and subtreed into every per-OS repo) reads the most recent manifest and reports current state.
 - **TLS 1.3 by default, TLS 1.2 fallback only in managed scripts.** Corporate proxies in 2026 should support TLS 1.3 nine years after RFC 8446. If they don't, that's a managed-script concern.
 - **Network egress check in preflight.** A simple HEAD to a known-stable URL with the configured CA bundle. If it fails, abort before any partial install. Half-installs are worse than failures.
 
@@ -272,11 +448,149 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 
 ---
 
+## 6b. TUI selector parity across OSes
+
+The macOS installer in v1 carries a TUI selector that is significantly more advanced than what `install_linux.sh` or `install_windows.ps1` do. v2 ports that capability to all four OS targets — tailored per platform, not copied verbatim. The contract is the contract; the implementation per OS is whatever fits the platform best.
+
+### 6b.1 The TUI contract (source of truth: macOS v1)
+
+v1's macOS TUI lives in two places: a Bubbletea Go binary at `tui/selector/main.go` invoked from `install_mac.sh:556-622`, and a bash fallback (`show_menu` at `install_mac.sh:603-623`, `show_custom_menu` at `581-601`) used when the Go binary can't build. The Bubbletea implementation is the user-facing experience; the bash fallback is the safety net.
+
+v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementation inside each install script.
+
+**Top-level menu (single select).**
+
+1. Full install
+2. Shell only
+3. Projector only
+4. Custom
+
+**Custom sub-categories (multi-select).**
+
+1. Shell environment (Zsh / PowerShell, plugins, dotfiles)
+2. AI Tools (gemini-cli, Anthropic Claude — pending §9 OQ#3)
+3. Developer Tools (bat, fzf, jq, ripgrep, lsd, micro, tmux, starship, btop, language toolchains)
+4. Package Managers (npm, yarn, pipx, uv, rustup)
+5. Security Tools (1Password CLI, nmap, openssl, yara, wtfis, ngrep, wireshark)
+6. Cloud / CLI (AWS CLI, rclone)
+7. Nerd Fonts (13 families pinned at v3.4.0)
+8. Projector Stack (weathr, trippy, animation runtime)
+9. Desktop Apps (macOS only: iTerm2, Keka)
+
+**State flow.** Top-level is single-select. Custom is multi-select. First-run defaults: all sub-categories checked (the v1 default and the safe fallback when anything goes sideways). Subsequent runs read prior selections from `state.json` and present those as defaults.
+
+**Visual affordances (floor every implementation must clear).** A banner identifying script + posture + OS, a divider, a cursor glyph on the focused row, multi-select checkboxes that distinguish by both glyph and color (`[✓]` / `[ ]`), and a bottom help bar listing the keys in plain text: `SPACE toggle · ENTER confirm · a toggle all · q abort`. Cyberwave palette where color is supported. Alt-screen rendering where the platform supports it, so the menu leaves scrollback unchanged on exit.
+
+**Keyboard contract.** Up / `k` — cursor up. Down / `j` — cursor down. Space — toggle focused item. `a` — toggle-all (any unchecked → check all; else uncheck all). Enter — confirm and exit. `q` or Ctrl+C — abort.
+
+**One change from v1.** Aborting in v1's Bubbletea silently defaulted to "install everything" (`tui/selector/main.go:379-382`). v2 considers that a footgun: aborting exits non-zero with `selection aborted; nothing installed`, and the user re-runs. Quiet success on abort is worse than loud failure.
+
+**Output contract.** The TUI emits `KEY=true|false` lines on stdout, one per sub-category, in a stable order. The install script captures stdout and sources the lines as shell variables (bash) or a hash-table (PowerShell). This seam — between the TUI and the rest of the script — is identical across all four OSes and must not vary.
+
+### 6b.2 State persistence
+
+Every run writes the user's confirmed selection to `~/.kniferoll/state.json` on Unix, `%APPDATA%\kniferoll\state.json` on Windows. Format:
+
+```json
+{
+  "schema": 1,
+  "last_run_iso": "2026-05-02T14:30:00Z",
+  "preset": "custom",
+  "selections": {
+    "shell_env": true,
+    "ai_tools": false,
+    "dev_tools": true,
+    "pkg_mgrs": true,
+    "security": false,
+    "cloud_cli": true,
+    "fonts": true,
+    "projector": false,
+    "desktop_apps": true
+  }
+}
+```
+
+On subsequent runs the TUI reads `state.json` and presents saved selections as defaults. First run (no file) falls back to all-checked.
+
+`--non-interactive` bypasses the TUI entirely and runs with last-saved selections. If no `state.json` exists, `--non-interactive` runs the conservative "Full install" preset (matching v1 batch-mode behavior). This flag is the ergonomic answer to CI usage *and* to re-running after a partial failure — the user fixes the cause, runs `install.sh --non-interactive`, and gets exactly the same selections they confirmed last time.
+
+`--dry-run` reads `state.json`, prints what would be selected, does not prompt, does not modify `state.json`.
+
+### 6b.3 Per-OS implementation
+
+**macOS (`kniferoll-mac` / `kniferoll-managed-mac`) — pure bash, re-exec'd under brewed bash 4+.**
+
+A bash-only TUI using ANSI escapes and `read -rsn1` for keystroke handling. Pure bash hits the §6.1 "no Go binary as a hard dependency" mandate and drops the Bubbletea binary. The TUI is ~250 lines, ships in `lib/tui.sh`, no external deps.
+
+The catch: macOS Apple Silicon ships with bash 3.2, which lacks associative arrays and `mapfile` — both of which the TUI uses. `install.sh`'s preamble checks `BASH_VERSION`, locates a brewed bash 4+ at `/opt/homebrew/bin/bash` or `/usr/local/bin/bash`, and re-execs itself under it. If neither exists, the script falls back to sequential yes/no prompts (the v1 `show_custom_menu` pattern). The README documents this: "macOS ships with bash 3.2; we use a brewed bash for the TUI and re-exec automatically — if Homebrew isn't installed yet, the script bootstraps it before the TUI runs."
+
+**Linux Debian/Ubuntu (`kniferoll-linux-deb` / `kniferoll-managed-linux-deb`) — gum primary, whiptail fallback.**
+
+Primary: `gum choose --header --no-limit --selected=...` from charmbracelet. gum produces the closest aesthetic match to the macOS Bubbletea look (same author, same `lipgloss` backend) and handles the keyboard contract natively. gum is installed in the script's preflight if missing — a small early apt install before the TUI runs.
+
+Fallback: `whiptail`, which ships in default Ubuntu/Debian and works without network. `whiptail --checklist` is less pretty than gum but covers the multi-select contract with full keyboard navigation.
+
+Last-resort: sequential yes/no prompts (the equivalent of v1's `show_custom_menu`). Cascade is gum → whiptail → sequential, runtime-detected; first available wins.
+
+**Linux Arch (`kniferoll-linux-arch` / `kniferoll-managed-linux-arch`) — same as Debian, different bootstrap.**
+
+gum primary (from AUR via the configured helper, or from charmbracelet's release binary), whiptail fallback (from `core`, bundled with `libnewt`). Sequential as last-resort. The only divergence from Debian is the install command if gum is missing during preflight: `pacman -S gum` or `<aur-helper> -S gum-bin` instead of `apt install`.
+
+**Windows (`kniferoll-windows` / `kniferoll-managed-windows`) — pure PowerShell, idiomatic.**
+
+Not a port of the bash TUI shape. Written PowerShell-first.
+
+Primary: `Out-GridView -PassThru -Title "..."`. `Out-GridView` is built into most PowerShell installs and provides a GUI-flavored checkbox list; `-PassThru` returns the selected items. Native, zero external deps, keyboardable.
+
+Fallback: a `Read-Host`-based menu that renders categories with numbered toggles. User types a number to flip a row's state, types `done` (or empty Enter) to confirm. Less polished but works in any PowerShell session, including remote/headless.
+
+`PSReadLine` selection menus are *not* used unless `PSReadLine` is already loaded. The v2 install path won't pull in PSReadLine just for the TUI — avoiding extra module loads is cheap insurance against version conflicts.
+
+### 6b.4 Managed-posture surfacing
+
+Managed scripts run an additional layer in the TUI. Before any sub-category list is shown, the menu surfaces the corp-CA preflight result:
+
+```
+[CORP-CA]  OK  Detected: /etc/ssl/certs/corp.pem  (loaded)
+```
+
+or
+
+```
+[CORP-CA]  ERR Not found. Set $KR_CA_BUNDLE or pass --ca-bundle PATH.
+              Network-dependent items will be unselectable below.
+```
+
+Items that require network (every category except a managed-shell-only install) are visibly marked unavailable when the corp-CA preflight has failed. The user can still see the categories — important for understanding what the script *would* do — but cannot select them in this state.
+
+If the user tries to confirm with greyed items still selected, the script returns a hard error and instructs the user to either fix the CA bundle (the recommended path) or unselect the network-dependent items (the workaround path). No auto-bypass; no quiet skip.
+
+### 6b.5 Cross-cutting principles
+
+- **Keyboard-only.** Every implementation must work without a mouse. macOS, Linux gum/whiptail, and Windows `Read-Host` are keyboard-native; Windows `Out-GridView` is mouse-friendly but also fully keyboardable (Tab, arrows, Space, Enter).
+- **Sane defaults on first run.** All sub-categories checked. Matches v1.
+- **Previous selections remembered.** `~/.kniferoll/state.json` (or platform equivalent) is the source. Written on confirm; read on every subsequent run.
+- **Dry-run shows would-select without prompting.** `--dry-run` reads `state.json` and prints; never opens a TUI.
+- **`--non-interactive` skips the TUI entirely.** Uses last-saved selections; falls back to "Full install" if none. Designed for CI and for resuming after a partial failure.
+- **Aborts are loud, not quiet.** `q` or Ctrl+C exits non-zero with `selection aborted; nothing installed`. This is the one place v2 explicitly breaks v1's behavior; v1's silent default-everything-on-abort was a footgun.
+
+### 6b.6 Honest divergence
+
+The contract — categories, output format, state file, keyboard intent (toggle / confirm / abort / toggle-all) — is identical across the four OSes. What necessarily diverges:
+
+- **Visual style.** macOS pure-bash ANSI ≈ Linux gum (both lipgloss-flavored when gum is present) ≈ macOS-Bubbletea-v1 in look and feel. Windows `Out-GridView` is a grid widget, not an ANSI list, and looks Windows-y. Pretending the four are byte-identical would be worse than letting each platform look like itself.
+- **Bash-version requirements.** macOS re-execs to bash 4+ under Homebrew. Linux uses bash 4+ natively (every supported distro ships it). Windows is PowerShell 7+. Each per-OS README documents the version requirement and the fallback chain.
+- **Fallback chains.** macOS: pure-bash TUI → sequential yes/no (when no brewed bash). Linux: gum → whiptail → sequential. Windows: `Out-GridView` → `Read-Host`. Documented per-script.
+
+These divergences are intentional and called out in the docs. Uniformity-by-pretense would be worse than uniformity-by-contract.
+
+---
+
 ## 7. Per-script structure
 
-Every one of the eight scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-linux-deb/lib/SKELETON.md` and is vendored alongside the rest of `lib/` into every consumer repo; new scripts are diffs against the skeleton.
+Every one of the eight scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-unpack/lib/SKELETON.md` and is subtreed alongside the rest of `lib/` into every per-OS repo; new scripts are diffs against the skeleton.
 
-**Header block.** Shebang (`#!/usr/bin/env bash` or `#!/usr/bin/env pwsh`), strict mode (`set -Eeuo pipefail` for bash, `Set-StrictMode -Version Latest` and `$ErrorActionPreference = 'Stop'` for PowerShell), then a 10-line comment header: repo name, target OS, posture, version, build date, source repo URL, license, brief description, link to docs, the `kniferoll-linux-deb@<tag>` the vendored `lib/` was sourced from + its SHA256 (read from `lib/.vendor`).
+**Header block.** Shebang (`#!/usr/bin/env bash` or `#!/usr/bin/env pwsh`), strict mode (`set -Eeuo pipefail` for bash, `Set-StrictMode -Version Latest` and `$ErrorActionPreference = 'Stop'` for PowerShell), then a 10-line comment header: repo name, target OS, posture, version, build date, source repo URL, license, brief description, link to docs, the `kniferoll-unpack@<tag>` the subtreed `lib/` was sourced from (read from `lib/VERSION`).
 
 **Preflight.** Six checks, in order, each with its own exit code:
 
@@ -374,22 +688,25 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 Three remain. Everything else is resolved (see below) or scoped to a phase boundary.
 
 1. **WSL2 status.** Fold WSL2 into `silo-agent/kniferoll-linux-deb` (and the managed twin if needed) with a small `if-wsl` branch, or promote to a ninth target? WSL2 is Debian-on-Hyper-V and doesn't justify its own script unless the corporate WSL2 setup (custom rootfs, internal mirrors, MDM hooks into the Hyper-V layer) materially changes the math.
-2. **TUI selector and projector — keep, fold, or split off?** v1 bundles a Go TUI selector and a Python projector that have nothing to do with installation. The clean answer is to split them into separate repos (`silo-agent/kniferoll-shell` for the post-install shell-experience runtime; `silo-agent/kniferoll-projector` for the animation orchestrator) so the v2 install scripts stay shell-native and dependency-light. Confirm.
-3. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), `gum` (Windows-only in v1 — promote to all platforms or remove?), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). Needs an answer before phase 5.
+2. **Projector disposition.** v1 bundles a Python animation orchestrator (`projector.py`) that has nothing to do with installation. Recommendation: split it into `silo-agent/kniferoll-projector` so the install scripts stay shell-native and dependency-light. (TUI selector — the other v1 ancillary — is now resolved per §6b: it's in-script per-OS, not a separate binary.)
+3. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), `gum` (Windows-only in v1 — promote to all platforms or remove? — note §6b recommends gum for Linux TUI), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). Needs an answer before phase 5.
 
 **Phase-5 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 5.
 
 ### Resolved
 
-- **Naming.** Flat: `kniferoll-<os>` and `kniferoll-managed-<os>`. Entry script inside each repo is `install.sh` (Unix) / `install.ps1` (Windows).
-- **Repo granularity.** Eight repos under `silo-agent` (extant). No 9th library repo; `lib/` lives in `kniferoll-linux-deb` and is vendored into the other seven.
-- **Vendoring mechanics.** Committed `lib/` snapshot + `lib/.vendor` (tag + SHA256). Bumping is one PR per consumer.
+- **Naming.** Flat: `kniferoll-<os>` and `kniferoll-managed-<os>`. Entry script inside each per-OS repo is `install.sh` (Unix) / `install.ps1` (Windows).
+- **Repo granularity.** Ten repos under `silo-agent`: eight per-OS (extant) + two coordination (to be created — `kniferoll-unpack` public, `kniferoll-managed-unpack` private). See §5b.
+- **Coordination layer shape.** Bootstrap entry + shared library in one repo per posture. Per-OS repos consume via subtree (§5b.1).
+- **Shared-code mechanism.** Git subtree with `make sync-core`. Squashed merge commits, `lib/VERSION` for human-readable upstream tag, no submodules, no manual vendoring. (§5b.2)
+- **Posture isolation.** Strict one-way dependency: public never reads private, private subtrees public, never the reverse. CI grep-fails any `managed-unpack` reference in `kniferoll-unpack`. (§5b.3)
 - **Account shape.** Personal account today, possibly org later. Per-collaborator grants today; team grants on org conversion.
+- **TUI selector.** Per-OS in-script implementation; behavior matches the macOS contract documented in §6b. Not a separate repo, not a separate binary.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 9 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
 - **Project name.** `kniferoll`. The `terminal-` prefix is dead.
 - **Old `terminal-kniferoll` repo.** Keep on `main` as a frozen v1 reference. Tag the last v1 commit `v1-final`. Let it rest as documentation of what we used to do and why.
-- **Telemetry.** None, ever, in any posture. Recorded in `kniferoll-linux-deb/docs/ARCHITECTURE.md` as a non-negotiable.
+- **Telemetry.** None, ever, in any posture. Recorded in `kniferoll-unpack/docs/ARCHITECTURE.md` as a non-negotiable.
 
 ---
 
@@ -397,23 +714,23 @@ Three remain. Everything else is resolved (see below) or scoped to a phase bound
 
 Sequenced by what unlocks the most learning fastest, not by OS.
 
-**Phase 0 — Pre-flight.** Mostly already done: eight repos exist, admin grants issued, naming and repo strategy locked. Remaining before phase 1: confirm WSL2, TUI/projector, and inventory-bump open questions (§9). No code yet.
+**Phase 0 — Pre-flight.** Eight per-OS repos exist; admin grants done; naming and repo strategy locked. Remaining: create the two coordination repos (`silo-agent/kniferoll-unpack` public, `silo-agent/kniferoll-managed-unpack` private), grant `albethere` admin on both. Confirm the three remaining open questions (§9: WSL2, projector disposition, inventory bumps). No installer code yet.
 
-**Phase 1 — Skeleton.** Empty scaffolding committed to all four unmanaged repos: `install.sh`, header block, preflight, mode flags, exit codes, log format — no install logic yet. `kniferoll-linux-deb/lib/` v0.1.0 stubs (download-and-verify, log format, exit-code helpers, manifest writer); tagged when the script ships in phase 2. `kniferoll-linux-deb/docs/` gets the first drafts of `ARCHITECTURE.md`, `FLAVOR.md`, `SKELETON.md`. Goal: a user can clone any unmanaged repo, run `./install.sh --dry-run` (or `.\install.ps1 -DryRun` on Windows), and see the skeleton produce empty output without errors.
+**Phase 1 — Skeleton.** `kniferoll-unpack` gets its initial structure: stubbed `unpack` dispatcher, `lib/` skeleton (download-and-verify, log format, exit-code helpers, manifest writer, `SKELETON.md`), `docs/` with `ARCHITECTURE.md` + `FLAVOR.md` first drafts. Tag `kniferoll-unpack@v0.1.0`. Each of the four unmanaged per-OS repos commits its `install.sh` skeleton (header, preflight, mode flags, exit codes, log format — no install logic yet) and runs `make sync-core` to subtree the v0.1.0 lib. Goal: a user can clone any unmanaged per-OS repo, run `./install.sh --dry-run`, and see the skeleton produce empty output. The unpack dispatcher's OS detection works end-to-end for the unmanaged path.
 
-**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force`. This is the reference implementation; every later script is a diff against it. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0` (and with it the first lib tag the other seven will vendor).
+**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force` + `--non-interactive`. The TUI selector ships in this phase as the reference contract for the other three (per §6b). Every later script is a diff against this. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0`.
 
-**Phase 3 — Same hand, new arch: `kniferoll-linux-arch`.** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-linux-deb` (script and/or `lib/`); `kniferoll-linux-arch` vendors the updated lib tag.
+**Phase 3 — Same hand, new arch: `kniferoll-linux-arch`.** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-unpack/lib/` (and bumped on each consumer via `make sync-core`).
 
-**Phase 4 — Cross the threshold: `kniferoll-mac`.** Homebrew, different file paths (`~/.zshrc` vs `~/.zprofile` precedence, `/opt/homebrew` prefix, iTerm2 colorscheme deployment). The lib proves itself across two OS families.
+**Phase 4 — Cross the threshold: `kniferoll-mac`.** Homebrew, different file paths (`~/.zshrc` vs `~/.zprofile` precedence, `/opt/homebrew` prefix, iTerm2 colorscheme deployment). The TUI ports to brewed-bash-4 with associative-array selection state and persistence (§6b). The lib proves itself across two OS families.
 
-**Phase 5 — Mind the proxy: `kniferoll-managed-linux-deb`.** First managed-repo work. Bump `kniferoll-linux-deb` lib (e.g., to `v0.2.0`) if new primitives are needed for corp posture. Implement: corp-CA detection (auto-detect path list + `--ca-bundle` override), CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), the corp policy file reader. No splash-page bypass — if encountered, exit 5 with an instruction to accept in browser. Goal: get the corp posture *exactly right* on one script before extending. The corp-CA propagation is the highest-stakes code in v2.
+**Phase 5 — Mind the proxy: `kniferoll-managed-unpack` + `kniferoll-managed-linux-deb`.** First managed-repo work. Stand up `kniferoll-managed-unpack`: stub `unpack` dispatcher with hard CA preflight, subtree `kniferoll-unpack/lib/` into `lib/`, seed `managed-lib/` (canonical: `ca_detection.sh`, `ca_propagation.sh`, `mdm_probes.sh`, `internal_repos.sh`). Bump `kniferoll-unpack/lib/` (e.g., to `v0.2.0`) if it needs new primitives for corp posture. Implement `kniferoll-managed-linux-deb`: corp-CA detection, CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), the corp policy file reader. No splash-page bypass — if encountered, exit 5 with an instruction to accept in browser. Goal: get the corp posture *exactly right* on one script before extending. The corp-CA propagation is the highest-stakes code in v2.
 
 **Phase 6 — Fill the matrix: `kniferoll-managed-mac`, `kniferoll-managed-linux-arch`.** Port the corp-CA work from phase 5 into the other two managed Unix scripts. By now the pattern is set; these are diffs against phase 5 and their unmanaged twins.
 
-**Phase 7 — Other shore: `kniferoll-windows`, `kniferoll-managed-windows`.** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. The longest phase, because PowerShell is foreign to most of the project's muscle memory.
+**Phase 7 — Other shore: `kniferoll-windows`, `kniferoll-managed-windows`.** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. The Windows TUI follows the §6b PowerShell-idiomatic recommendation (`Out-GridView` primary, `Read-Host` menu fallback). The longest phase, because PowerShell is foreign to most of the project's muscle memory.
 
-**Phase 8 — Ship v2.0.** Demo GIFs. README polish. CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every repo. `KR_INTERNAL_REPOS` ships *disabled* per §6.2; v2.0 works end-to-end against public sources on every posture. The frozen `albethere/terminal-kniferoll` repo gets a `README` pointer to the new family and a `v1-final` tag on its last commit.
+**Phase 8 — Ship v2.0.** Demo GIFs. README polish. CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every per-OS repo and on `kniferoll-unpack` / `kniferoll-managed-unpack`. `KR_INTERNAL_REPOS` ships *disabled* per §6.2; v2.0 works end-to-end against public sources on every posture. The frozen `albethere/terminal-kniferoll` repo gets a `README` pointer to the new family and a `v1-final` tag on its last commit.
 
 **Phase 9 (post-v2.0) — Internal-repos enablement.** Wire the off-by-default `KR_INTERNAL_REPOS` paths from phase 5 to a real corporate-mirror configuration. Test against staged internal mirrors. Tag managed scripts `v1.1.0` with the toggle ready for users who set the flag. The toggle stays per-user/per-host, never globally on by default.
 
@@ -432,7 +749,7 @@ Code-level verification per phase:
 - Each `install.sh` / `install.ps1` has a `--dry-run` (or `-DryRun`) that produces parseable output covered by a smoke test.
 - Each `install.sh` / `install.ps1` has a `--check` that reports drift against its own manifest.
 - Each script's preflight has a unit-testable failure path for every exit code (2.1 through 2.6).
-- `kniferoll-linux-deb/lib/` has a test suite ported and modernized from v1's `scripts/test-sweep.{sh,ps1}`.
+- `kniferoll-unpack/lib/` has a test suite ported and modernized from v1's `scripts/test-sweep.{sh,ps1}`.
 - Phase 5's corp-CA propagation has integration tests that simulate a TLS-inspecting proxy (mitmproxy with a self-signed CA) and verify every propagated env var is set, every tool can curl through, and the manifest reflects the bundle source. The internal-repos code paths have unit tests against a staged mirror config but ship disabled until phase 9.
 
 ---
