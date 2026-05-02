@@ -38,7 +38,7 @@ This section is the source-of-truth for "what must the rewrite still do." It is 
 
 The full inventory across the three scripts (deduped, not exhaustive on every platform):
 
-- **Core CLI / TUI**: bat, btop, cmatrix, cbonsai, exiftool, fastfetch, fzf, gh, hexyl, jq, lolcat, lsd, micro, ngrep, nmap, nushell, ripgrep, speedtest-cli, sqlite, starship, tealdeer, tmux, yazi, zoxide, zsh-autosuggestions, fast-syntax-highlighting.
+- **Core CLI / TUI**: bat, btop, cmatrix, cbonsai, exiftool, fastfetch, fzf, gh, hexyl, jq, lolcat, lsd, micro, ngrep, nmap, nushell, ripgrep, `speedtest-cli` *(deprecated — see §3.5; v2 drops it on fresh installs)*, sqlite, starship, tealdeer, tmux, yazi, zoxide, zsh-autosuggestions, fast-syntax-highlighting.
 - **Build / language tools**: gcc, build-essential, binutils, fontconfig, freetype, gnutls, lz4, m4, ncurses, harfbuzz, openssl@3, openjdk, lua, ruby (+ `lolcat` gem), node + npm + yarn, python@3.12 + pipx + uv, go, **rustup**.
 - **Security**: ca-certificates, gnutls, nmap, ngrep, tcpdump, unbound, wireshark, yara, 1password-cli.
 - **Cloud CLIs**: awscli, azure-cli (Win), gcloud (Win), rclone.
@@ -192,6 +192,38 @@ Existing `/etc/wsl.conf` and `/etc/resolv.conf` are backed up timestamped before
 3. Auto-export via interop: `powershell.exe -Command "Get-ChildItem Cert:\LocalMachine\Root | Where-Object Subject -match '<corp-issuer>' | Export-Certificate -FilePath C:\temp\corp-ca.cer"`. Clever but fragile — behind a `--auto-export-ca` flag, off by default.
 
 Internal package mirrors (the §6.2 toggle) work from WSL2 only when the Windows host can reach them. If the corp VPN doesn't tunnel WSL2 traffic by default, the user is told to switch to mirrored networking mode (above) or ask IT to configure WSL2 routing. The script does not auto-fix VPN routing.
+
+### 3.5 Deprecations and replacements
+
+Some tools in v1's inventory don't make it into v2's default. Where a replacement exists that clears the §6.2 cooling-off, lean-inventory, and quarterly-review bars, the plan documents the swap and the migration path. Where no replacement clears the bar, v2 ships without the tool and the README tells users they can add one manually — better no tool than a known-bad one.
+
+The general pattern, called out in the §6.2 security manifesto: a tool flagged for removal does NOT get yanked from existing installs at v2.0. v2.0 simply stops shipping it on fresh installs. A follow-up release introduces an opt-in `--migrate-<tool>` flag (or `kniferoll migrate <tool>` sub-command) that performs the uninstall-and-replace in one step. No silent breakage; no surprise removals; the user's machine never changes behind their back.
+
+#### 3.5.1 `speedtest-cli` → Ookla's official `speedtest`
+
+**Why drop it.** v1 ships `speedtest-cli` (Sivel's Python implementation, `pypi.org/project/speedtest-cli/`). The package was effectively orphaned by Ookla in 2021, has had no meaningful maintenance since 2022, and its install path (pip via the network, Python supply chain) is exactly the shape v2 wants to minimize. Ookla has rate-limited the endpoints the legacy tool uses and intermittently returns inaccurate results because the unofficial client violates Ookla's current API contracts. It is the textbook case of a v1 tool that does not earn its slot in v2.
+
+**Candidates evaluated against the §6.2 bar** (5k+ stars, maintained ≤ 12 mo, no telemetry by default, no curl-pipe-bash install):
+
+| Candidate | Verdict | Notes |
+|-----------|---------|-------|
+| **Ookla `speedtest` (official)** | **Picked** | Closed source. Native binary distributed via Ookla's official apt/yum repos (signed), Homebrew (`brew install speedtest`), winget (`Ookla.Speedtest.CLI`), AUR (binary wrapper). No Python/Node supply chain. The "5k+ GitHub stars" bar is a proxy for community vetting; Ookla has *more* community vetting than any GitHub project, just not measured on GitHub — hundreds of millions of users, decades of public scrutiny. Closed source is a real demerit; mitigated by signed packages and official install paths. |
+| `librespeed-cli` | Documented fallback | `librespeed/speedtest-cli` on GitHub. Open source, Go. Approximately 2.5k stars (under the literal bar). Actively maintained. Lets the user pick a LibreSpeed-compatible server. The right pick for users who refuse closed-source binaries on principle; `kniferoll-unpack/docs/alternatives.md` documents how to swap it in manually. |
+| `speedtest-go` | Not picked | `showwin/speedtest-go`. Go library + CLI that uses Ookla's network. ~2k stars. Active. Uses Ookla's network anyway, so the "open-source alternative to Ookla's CLI" framing is partially undermined; the user gets the supply-chain story of a smaller-audience Go project without escaping Ookla's measurement infrastructure. |
+| `fast-cli` (Sindre Sorhus) | Not picked | Node.js CLI for fast.com (Netflix's speed test). Star count clears the bar; pulls the Node dependency tree, which is the supply-chain shape v2 most wants to avoid. Trade rejected. |
+
+**Bar-vs-spirit honesty.** Ookla's CLI literally fails the "5k+ GitHub stars" criterion because it is not on GitHub. The bar's *intent* — wide community vetting, longevity, low chance of supply-chain compromise — is met by Ookla through a different evidence base: hundreds of millions of users globally, signed binary distribution by a well-known commercial entity, decades of security scrutiny in production. The bar exists to filter small/abandoned projects, not to exclude legitimately commercial tools that don't happen to live on GitHub. We pick Ookla; we acknowledge the open-source demerit; we document `librespeed-cli` as the alternative for users who refuse closed-source binaries. If the closed-source demerit is itself a deal-breaker for a given user, v2 ships without a default speedtest tool for them and the README points at the `librespeed-cli` swap-in.
+
+**Install path per OS** (no curl-pipe-bash; §6.2):
+
+- **macOS:** `brew install speedtest --formula` (Ookla's tap is in `homebrew-core` directly).
+- **Debian/Ubuntu (native and WSL2):** Ookla's recommended install is a curl-pipe-bash, which v2 forbids. Instead, the script fetches Ookla's GPG key and apt-source configuration manually, verifies the GPG fingerprint against an out-of-band fingerprint committed to `kniferoll-unpack/lib/keys/ookla.fingerprint`, writes the apt source list directly, and runs `sudo apt install speedtest`.
+- **Arch:** AUR `speedtest-cli` (the AUR package wraps the official Ookla binary, not Sivel's deprecated Python). PKGBUILD verified at install time; falls back to Ookla's release tarball with a committed SHA256 if AUR is unavailable.
+- **Windows:** `winget install Ookla.Speedtest.CLI`.
+
+**Migration path (post-v2.0).** A follow-up release ships `kniferoll migrate speedtest-cli` (or `--migrate-speedtest-cli` flag on the per-OS scripts). When invoked: `pip uninstall speedtest-cli` (or distro equivalent if installed via apt/pacman/brew), then install Ookla's `speedtest` via the path above, then update `~/.kniferoll/state.json` to record the migration. v2.0 itself does not remove `speedtest-cli` from existing installs — users opted into it once at v1, and the v2.0 release is not permitted to silently undo that opt-in. The migration is opt-in, documented in the v2.x release notes, and accompanied by a deep dive (§11) explaining what changed and why.
+
+**TUI placement.** Ookla `speedtest` lives in the Developer tools category, default-on. Description shown in the TUI: "Ookla's official speed test (signed binary)". v1's `speedtest-cli` is removed from every category in v2 — selecting Custom on a fresh install will not show it as an option.
 
 ---
 
@@ -517,6 +549,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **Cooling-off period: 7 days from upstream release.** When pinning a new version of any tool, font, or cargo crate, maintainers wait at least 7 days from the upstream release date before merging the bump PR. Most supply-chain attacks (yanked malicious packages, compromised maintainer accounts, registry takeovers) get caught within hours-to-days; a 7-day floor lets the community immune system do its work before kniferoll's CI starts feeding compromised artifacts to users. The pinned-version table records `released_at` ISO date alongside each version string; CI on bump PRs verifies `today - released_at >= 7 days` and fails otherwise. Emergency security bumps (CVEs, urgent patches) override via `--allow-fresh` with a documented reason in the PR body.
 - **Lean dependency surface.** Every tool in the default inventory earns its slot. The projector stack (weathr, trippy, the animation runtime) lives in `silo-agent/kniferoll-projector` and is opt-in via `--projector` — none of it lands in a per-OS repo's default install. If a tool is "nice to have" but not load-bearing for the shell experience, it goes in an opt-in flag, not the default. Smaller default inventory means fewer pinned versions to track, fewer CVE windows, fewer cooling-off-period bumps to coordinate.
 - **Quarterly inventory review.** The default tool inventory is reviewed quarterly against three questions: still best-in-class? still actively maintained, with a healthy upstream? still the most secure / least-attack-surface choice for its slot? Tools that fail any of the three are replaced or dropped in the next release. The review is recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md` listing tools held / added / removed and the rationale for each change. This is the project's structural answer to "the toolkit must evolve" — cadence-driven, transparent, and auditable. The AI category (§6b.7) is the most active beneficiary of this review since AI tools evolve faster than anything else, but the cadence applies to every category.
+- **Deferred-replacement pattern: deprecated tools removed by default; explicit migration flags, not silent breakage.** When a tool in v1's inventory is flagged as deprecated, abandoned, or a supply-chain risk in v2's review, it does not ship in v2's default install on fresh setups. Existing installs from v1 are *not* silently yanked — v2 doesn't reach into a user's machine and uninstall things behind their back. Follow-up v2.x releases ship explicit `--migrate-<tool>` flags (or `kniferoll migrate <tool>` sub-commands) that, when invoked, remove the deprecated tool and install its replacement (or just remove it, if nothing replaces it). The migration is opt-in, documented in the release notes, and accompanied by a deep dive (§11) explaining what changed and why. The first applied case is `speedtest-cli` → Ookla's official `speedtest` (§3.5.1); the pattern carries forward to every future deprecation.
 - **Refuse to run as root unless explicitly invoked with `--root` and a documented reason.** The v1 scripts require sudo for individual operations (`sudo apt`, etc.) and that pattern continues — but the script itself runs as the user, never as root. `--root` is reserved for VM-bootstrap or container-image-build scenarios where there is no user yet.
 - **Explicit handling of corp TLS interception in managed scripts only.** Managed scripts take a CA bundle path via `--ca-bundle` flag or `KR_CA_BUNDLE` env var (with auto-detection as fallback) and propagate it to: `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `PIP_CERT`, `CARGO_HTTP_CAINFO` (Windows), `HOMEBREW_CURLOPT_CACERT` (macOS). Unmanaged scripts have no concept of a corp CA and refuse to read these env vars even if set — managed work belongs in managed scripts.
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
@@ -577,6 +610,8 @@ The AI category is the one departure from "all on by default." Every tool in it 
 **State flow.** Top-level is single-select. Custom is multi-select. First-run defaults follow the table above (all categories on except AI, which is all-off). Subsequent runs read prior per-tool selections from `state.json` and present those as defaults.
 
 **Visual affordances (floor every implementation must clear).** A banner identifying script + posture + OS, a divider, a cursor glyph on the focused row, multi-select checkboxes that distinguish by both glyph and color (`[✓]` / `[ ]`), and a bottom help bar listing the keys in plain text: `SPACE toggle · ENTER confirm · a toggle all · q abort`. Cyberwave palette where color is supported. Alt-screen rendering where the platform supports it, so the menu leaves scrollback unchanged on exit.
+
+**Tool descriptions are part of every row.** Every tool entry shows its name and a one-line description (≤ 60 characters, dim/italic where the platform supports it). The user shouldn't have to leave the TUI to know what `mods` does or what `aichat` is. Implementations differ in how they render this — macOS pure-bash uses ` — <description>` with dim color (matching the v1 Bubbletea pattern at `tui/selector/main.go:356`); gum and whiptail use their native description-column formats; `Out-GridView` exposes a sortable `Description` column. The descriptions are committed alongside tool names in the inventory files (`kniferoll-unpack/lib/inventory/<category>.sh`), versioned with the tool, and reviewed at the same quarterly cadence (§6.2). Length cap of 60 characters is enforced by a CI lint so descriptions never wrap in 80-col terminals.
 
 **Keyboard contract.** Up / `k` — cursor up. Down / `j` — cursor down. Space — toggle focused item. `a` — toggle-all (any unchecked → check all; else uncheck all). Enter — confirm and exit. `q` or Ctrl+C — abort.
 
@@ -695,24 +730,26 @@ These divergences are intentional and called out in the docs. Uniformity-by-pret
 
 The AI category is its own section because the tools in it evolve faster than anything else in the project, the licensing/auth/cost stories vary widely, and most users want to opt into specific ones rather than receive the full set. Defaulting the whole category off — every individual tool unselected on first run — respects that. A user who wants `claude-code` enables it; the rest stay off until they're explicitly chosen. This is the one category where v2 deliberately diverges from "all on by default."
 
-**Canonical AI inventory (every tool off by default; cross-platform unless noted):**
+**Canonical AI inventory (every tool off by default; cross-platform unless noted).**
 
-| Tool | What it is | Notes |
-|------|------------|-------|
+The "TUI description" column is what the user sees in the selector next to the tool name (≤ 60 chars per the §6b.1 contract). The "Notes" column is plan-level context for maintainers; it does *not* render in the TUI.
+
+| Tool | TUI description | Notes |
+|------|-----------------|-------|
 | `claude-code` | Anthropic Claude Code CLI | Installed via the official npm package or platform-native installer. |
 | `gemini-cli` | Google Gemini CLI | Currently brew/npm; cross-platform. |
 | `codex-cli` | OpenAI Codex CLI (`@openai/codex`) | npm-installed. Verify the latest official package name at install time — it has changed once. |
-| `copilot-cli` | GitHub Copilot CLI as a `gh` extension (`gh extension install github/gh-copilot`) | Requires `gh` (already in the dev-tools default). The standalone `copilot-cli` predecessor is dead. |
-| `aider` | aider-chat: AI pair-programming CLI (Python) | Installed via pipx. Multi-provider. |
-| `langchain-cli` | LangChain framework CLI for project scaffolding | Note: LangChain proper is a Python library; this entry is the project-scaffolding CLI. Users who want the library install it directly via pip. |
-| `llm` | Simon Willison's `llm` CLI | Lightweight, multi-provider, plugin ecosystem. The "Unix philosophy of LLM CLIs." |
-| `ollama` | Local LLM runtime CLI | For offline / private-data work. Especially relevant in security/detection-engineering contexts where prompt content shouldn't leave the host. |
-| `mods` | charmbracelet `mods` CLI for piping content to LLMs | TUI-pretty, fits the kniferoll aesthetic. Multi-provider. |
+| `copilot-cli` | GitHub Copilot CLI (`gh` extension) | Requires `gh` (already in the dev-tools default). Installed via `gh extension install github/gh-copilot`. The standalone `copilot-cli` predecessor is dead. |
+| `aider` | aider-chat: AI pair-programming CLI | Installed via pipx. Multi-provider. |
+| `langchain-cli` | LangChain framework scaffolding CLI | Note: LangChain proper is a Python library, not a CLI; this entry is the project-scaffolding CLI. Users who want the library install it directly via pip. |
+| `llm` | Simon Willison's `llm` (multi-provider) | Lightweight, plugin ecosystem. The "Unix philosophy of LLM CLIs." |
+| `ollama` | Local LLM runtime (offline / private) | For sensitive-data work. Especially relevant in security/detection-engineering contexts where prompt content shouldn't leave the host. |
+| `mods` | charmbracelet `mods` (pipe-to-LLM, TUI) | Fits the kniferoll aesthetic. Multi-provider. |
 | `fabric` | Daniel Miessler's `fabric` prompt framework | Security-focused prompt collection; directly relevant to detection-engineering work. |
-| `goose` | Block's open-source agent framework with CLI | Recent and well-maintained. Useful for AI-driven detection eng. |
-| `aichat` | Multi-provider chat CLI (Rust) | Fast, lightweight alternative to `llm`. |
+| `goose` | Block's open-source agent CLI | Recent and well-maintained. Useful for AI-driven detection eng. |
+| `aichat` | Multi-provider chat CLI (Rust, fast) | Lightweight alternative to `llm`. |
 
-This list is not closed. The §6.2 cooling-off period (7 days from upstream release before any pin lands) and the §6.2 quarterly inventory review cadence apply to AI tools the same as to every other category. Tools that drift from "best-in-class, most-elegant, most-secure" are replaced or dropped; new ones that emerge between reviews can be added with a §6.2-compliant version pin and a deep dive (§11) explaining why they earned a slot. The pattern: the inventory file in `kniferoll-unpack/lib/inventory/ai.sh` is the source of truth; the table above is a snapshot of the v2.0-launch state.
+This list is not closed. The §6.2 cooling-off period (7 days from upstream release before any pin lands), the §6.2 quarterly inventory review cadence, and the §6.2 deferred-replacement pattern (deprecated tools removed by default, explicit `--migrate-<tool>` flags rather than silent breakage) all apply to AI tools the same as to every other category. Tools that drift from "best-in-class, most-elegant, most-secure" are replaced or dropped; new ones that emerge between reviews can be added with a §6.2-compliant version pin and a deep dive (§11) explaining why they earned a slot. The pattern: the inventory file at `kniferoll-unpack/lib/inventory/ai.sh` is the source of truth; this table is a snapshot of the v2.0-launch state.
 
 ---
 
@@ -833,6 +870,8 @@ None blocking phase 1. Everything is resolved (see below) or scoped to a later p
 - **Tool selection model.** Per-tool granularity, not per-category. Every tool in the inventory is individually selectable in Custom mode. Categories are visual section headers, not single-toggle buckets. (§6b.1)
 - **AI tools default state.** Off by default — every individual AI tool ships unselected. The user opts into specific tools. The canonical AI inventory at v2.0 launch is in §6b.7 (claude-code, gemini-cli, codex-cli, copilot-cli, aider, langchain-cli, llm, ollama, mods, fabric, goose, aichat); the list is reviewed quarterly per the §6.2 cadence.
 - **Inventory cadence.** Quarterly review against three questions (best-in-class? actively maintained? most secure choice for its slot?). Recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md`. (§6.2)
+- **Deferred-replacement pattern.** Deprecated tools are not yanked from existing v1 installs at v2.0; v2.0 stops shipping them on fresh installs, and follow-up `--migrate-<tool>` flags handle the swap explicitly. First worked example: `speedtest-cli` → Ookla's official `speedtest` (§3.5.1). The pattern is a §6.2 security manifesto principle that carries forward to every future deprecation.
+- **TUI tool descriptions.** Every tool in the inventory ships with a ≤ 60-char description that renders in the TUI next to the tool name. CI-lint enforces the length cap so descriptions never wrap on 80-col terminals. Descriptions are committed in the inventory files (`kniferoll-unpack/lib/inventory/<category>.sh`), versioned with the tool, and reviewed at the same quarterly cadence as the tool itself. (§6b.1, §6b.7)
 - **Project identity.** AI / cybersecurity engineer's working toolkit, designed to evolve. Stated in the §Context "What this project is for" paragraph and in the §8.1 niche.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
