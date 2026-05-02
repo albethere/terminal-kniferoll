@@ -36,8 +36,6 @@
     Do not auto-install PowerShell 7 even when running on 5.1.
 .PARAMETER NoRelaunch
     Do not relaunch in pwsh after installing PS 7. Stay in current session.
-.PARAMETER NoLogViewer
-    Do not spawn the side log-viewer window.
 .PARAMETER Help
     Show this help message and exit.
 
@@ -71,7 +69,6 @@ param(
     [switch]$Custom,
     [switch]$SkipPwshUpgrade,
     [switch]$NoRelaunch,
-    [switch]$NoLogViewer,
     [Alias('h')]
     [switch]$Help,
     [switch]$DryRun,
@@ -261,7 +258,6 @@ if ($Help) {
       -Custom            Choose individual tool groups interactively
       -SkipPwshUpgrade   Do not auto-install PowerShell 7
       -NoRelaunch        Do not relaunch in pwsh after PS 7 install
-      -NoLogViewer       Do not spawn the side log-viewer window
       -Help              Show this help and exit
 
   INSTALL GROUPS
@@ -1197,7 +1193,6 @@ function Restart-InPwsh {
         '-File', $scriptPath
     )
     if ($Mode) { $relayArgs += "-$Mode" }
-    if ($NoLogViewer) { $relayArgs += '-NoLogViewer' }
 
     Write-OK "Continuing in a fresh PowerShell 7 window..."
     try {
@@ -1478,118 +1473,15 @@ function Install-Gum {
 }
 
 # =============================================================================
-# LIVE LOG VIEWER (separate terminal window, bordered)
+# LIVE LOG VIEWER -- removed
+#
+# TODO(v2): true split-pane live log via wt.exe -p split-pane, not a separate
+# window. See V2_PLAN.md TUI parity section.
+#
+# Escape hatch in the meantime: file-based logging is unaffected. Tail it from
+# a separate shell with:
+#     Get-Content -Wait $env:USERPROFILE\.terminal-kniferoll\logs\install_*.log
 # =============================================================================
-
-function Start-LogViewerWindow {
-    if ($NoLogViewer) {
-        Write-Info "-NoLogViewer set -- skipping side log window"
-        return
-    }
-
-    $logPath = $Script:LogFile
-    if (-not (Test-Path $logPath)) {
-        # Create the file so Get-Content -Wait has something to grab.
-        New-Item -ItemType File -Force -Path $logPath | Out-Null
-    }
-
-    # The viewer script lives in $env:TEMP and tails the log forever.
-    $cwBorder  = $Script:CW.Pink
-    $cwHeading = $Script:CW.Cyan
-    $cwAccent  = $Script:CW.Yellow
-
-    $tailScript = @"
-`$ErrorActionPreference = 'Continue'
-`$Host.UI.RawUI.WindowTitle = 'terminal-kniferoll  //  live install log'
-
-function Show-Header {
-    if (Get-Command gum -ErrorAction SilentlyContinue) {
-        & gum style ``
-            --border 'double' ``
-            --border-foreground '$cwBorder' ``
-            --foreground '$cwHeading' ``
-            --padding '1 6' ``
-            --margin '1 2' ``
-            --align 'center' ``
-            "TERMINAL  KNIFEROLL`nLive Install Log  //  Cyberwave"
-        & gum style --foreground '$cwAccent' "  Tailing: '$logPath'"
-        Write-Host ''
-    } else {
-        Write-Host ''
-        Write-Host '  +==============================================================+' -ForegroundColor Magenta
-        Write-Host '  |          TERMINAL KNIFEROLL  //  live install log            |' -ForegroundColor Cyan
-        Write-Host '  +==============================================================+' -ForegroundColor Magenta
-        Write-Host "  Tailing: '$logPath'" -ForegroundColor Yellow
-        Write-Host ''
-    }
-}
-
-Show-Header
-
-# Wait for the file to exist (parent may still be initializing)
-`$start = Get-Date
-while (-not (Test-Path '$logPath')) {
-    if ((Get-Date) - `$start -gt [TimeSpan]::FromSeconds(30)) {
-        Write-Host '  Log file did not appear within 30 seconds. Exiting.' -ForegroundColor Red
-        exit 1
-    }
-    Start-Sleep -Milliseconds 200
-}
-
-Get-Content -Path '$logPath' -Wait | ForEach-Object {
-    `$line = `$_
-    if (`$null -eq `$line) { return }
-    `$text = "`$line"
-    if (`$text -match '\[ERROR\]')    { Write-Host `$text -ForegroundColor Red }
-    elseif (`$text -match '\[WARN\]') { Write-Host `$text -ForegroundColor Yellow }
-    elseif (`$text -match '\[OK\]')   { Write-Host `$text -ForegroundColor Green }
-    elseif (`$text -match '\[INFO\]') { Write-Host `$text -ForegroundColor Cyan }
-    else                                { Write-Host `$text -ForegroundColor Gray }
-    if (`$text -match '=== INSTALL COMPLETE ===') {
-        Write-Host ''
-        if (Get-Command gum -ErrorAction SilentlyContinue) {
-            & gum style ``
-                --border 'double' ``
-                --border-foreground '$cwBorder' ``
-                --foreground '$cwHeading' ``
-                --padding '1 6' ``
-                --margin '1 2' ``
-                --align 'center' ``
-                'INSTALL COMPLETE  //  knives sharp.'
-        }
-        Write-Host '  Press any key to close this window...' -ForegroundColor DarkGray
-        `$null = `$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-        exit 0
-    }
-}
-"@
-
-    $tempScript = Join-Path $env:TEMP "tk-logviewer-$([guid]::NewGuid().Guid).ps1"
-    Set-Content -Path $tempScript -Value $tailScript -Encoding UTF8 -Force
-
-    try {
-        # Prefer Windows Terminal in a NEW window with the Cyberwave color scheme.
-        if (Test-Cmd wt) {
-            $shellExe = if (Test-Cmd pwsh) { 'pwsh.exe' } else { 'powershell.exe' }
-            $wtArgs = @(
-                '-w', 'new', 'new-tab',
-                '--title', 'terminal-kniferoll  //  live log',
-                '--colorScheme', 'Cyberwave',
-                $shellExe, '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $tempScript
-            )
-            Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs -ErrorAction Stop | Out-Null
-            Write-OK "Live log viewer opened in new Windows Terminal window"
-        } else {
-            $shellExe = if (Test-Cmd pwsh) { 'pwsh.exe' } else { 'powershell.exe' }
-            Start-Process -FilePath $shellExe -ArgumentList @(
-                '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $tempScript
-            ) -ErrorAction Stop | Out-Null
-            Write-OK "Live log viewer opened in new $shellExe window"
-        }
-    } catch {
-        Write-Warn "Could not open live log viewer: $($_.Exception.Message)"
-    }
-}
 
 # =============================================================================
 # INSTALL HELPERS
@@ -2259,7 +2151,6 @@ Initialize-PackageManagers  # Scoop + Choco + gum
 Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Write-ZscalerEnvFile        # write env file with Windows-specific detection paths
 Invoke-ZscalerProfileSweep # sweep old Zscaler blocks from existing PS profiles
-Start-LogViewerWindow       # spawn the cyberwave-bordered live log window
 Resolve-InstallMode         # gum-based picker (now available)
 
 if ($Script:DoShell)     { Install-ShellExperience }
