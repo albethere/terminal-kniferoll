@@ -68,14 +68,35 @@ export ABUSEIPDB_API_KEY="${PRIVATE_ABUSEIPDB_API_KEY:-}"
 # --- INITIALIZATION ---
 [[ -f "$HOME/.cargo/env" ]] && . "$HOME/.cargo/env"
 
-# Welcome message
-if [[ -z "${DISABLE_WELCOME:-}" ]] && command -v fastfetch &>/dev/null; then
-    if command -v lolcat &>/dev/null; then
-        fastfetch --pipe | lolcat -f
+# --- LOLCRAB ALIAS / FF ALIAS / FASTFETCH GREETER ---
+# Three managed marker blocks below. The installer sweeps every POSIX RC file
+# (~/.zshrc, ~/.bashrc, ~/.profile, ~/.zprofile, ~/.bash_profile) and upserts
+# these in place — DO NOT EDIT inside the BEGIN/END markers.
+# BEGIN terminal-kniferoll lolcat-alias — DO NOT EDIT (managed by installer)
+if command -v lolcrab >/dev/null 2>&1 && ! command -v lolcat >/dev/null 2>&1; then
+    alias lolcat='lolcrab'
+fi
+# END terminal-kniferoll lolcat-alias
+
+# BEGIN terminal-kniferoll ff-alias — DO NOT EDIT (managed by installer)
+if command -v fastfetch >/dev/null 2>&1 && command -v lolcrab >/dev/null 2>&1; then
+    alias ff='fastfetch | lolcrab'
+elif command -v fastfetch >/dev/null 2>&1; then
+    alias ff='fastfetch'
+fi
+# END terminal-kniferoll ff-alias
+
+# BEGIN terminal-kniferoll fastfetch-greeter — DO NOT EDIT (managed by installer)
+if [ -z "${TK_FASTFETCH_GREETED:-}" ] && [ -z "${DISABLE_WELCOME:-}" ] && \
+   command -v fastfetch >/dev/null 2>&1; then
+    if command -v lolcrab >/dev/null 2>&1; then
+        fastfetch | lolcrab
     else
         fastfetch
     fi
+    export TK_FASTFETCH_GREETED=1
 fi
+# END terminal-kniferoll fastfetch-greeter
 
 # Wrapped evals (run after welcome to keep startup responsive)
 command -v zoxide &>/dev/null && eval "$(zoxide init zsh --cmd cd)"

@@ -59,11 +59,8 @@ if command -v trip &>/dev/null; then alias trippy='trip'; fi
 # Shell management
 alias snzrc='sudo nano ~/.zshrc'
 alias szrc='source ~/.zshrc'
-if command -v fastfetch &>/dev/null && command -v lolcat &>/dev/null; then
-    alias ff='fastfetch --pipe | lolcat'
-elif command -v fastfetch &>/dev/null; then
-    alias ff='fastfetch'
-fi
+# `ff` alias lives in the managed `ff-alias` marker block in ~/.zshrc / ~/.bashrc
+# (installer-upserted). See shell/zshrc.zsh and the installer sweep.
 
 # --- System update across every package manager present ---
 # `up` detects each package manager on PATH and runs its update flow.

@@ -511,6 +511,42 @@ cargo_install() {
     else warn "cargo install failed for $name"; FAILED_TOOLS+=("${name}(cargo)"); fi
 }
 
+# ── Helper: install lolcrab (rainbow CLI) — cascade ──────────────────────────
+# Cascade order:
+#   1. AUR (lolcrab-bin → lolcrab) on Arch when an AUR helper is available.
+#   2. cargo install lolcrab (crates.io, hash-verified). Linuxbrew has no
+#      lolcrab formula; apt does not package it.
+#
+# The lolcat → lolcrab backwards-compat alias is added by the rainbow-block
+# sweep at the end of this script. Failure is non-fatal — the fastfetch
+# greeter falls through to plain (non-rainbow) fastfetch.
+install_lolcrab() {
+    if is_installed "lolcrab"; then skip "lolcrab already installed"; return 0; fi
+
+    # Path 1: AUR (Arch only)
+    if [[ "$PKG_MGR" == "pacman" ]] && [[ -n "${AUR_HELPER:-}" ]] && \
+       command -v "$AUR_HELPER" &>/dev/null; then
+        local _pkg
+        for _pkg in lolcrab-bin lolcrab; do
+            if "$AUR_HELPER" -Si "$_pkg" &>/dev/null; then
+                run_optional "Installing $_pkg ($AUR_HELPER)" \
+                    "$AUR_HELPER" -S --noconfirm "$_pkg"
+                is_installed "lolcrab" && return 0
+                break
+            fi
+        done
+    fi
+
+    # Path 2: cargo (works on apt + pacman; crates.io hash-verified)
+    ensure_rust_toolchain
+    cargo_install "lolcrab" "lolcrab" "lolcrab (rainbow output)"
+    is_installed "lolcrab" && return 0
+
+    warn "lolcrab install failed — fastfetch greeter will fall through to plain output"
+    FAILED_TOOLS+=("lolcrab")
+    return 0
+}
+
 # ── Helper: install .deb from GitHub releases (arch-aware, with SHA256 verify) ─
 install_github_deb() {
     local check_bin="$1" repo="$2" pattern="$3" name="$4"
@@ -1265,6 +1301,120 @@ sweep_brew_shellenv_files() {
     unset _rc
 }
 
+# ── Rainbow / fastfetch managed marker blocks ────────────────────────────────
+# Three blocks — lolcat→lolcrab alias, ff alias, fastfetch greeter — emitted
+# into every POSIX RC file so bash users get them too. Order: aliases first,
+# greeter last (so the greeter's body uses lolcrab directly without going
+# through the alias).
+
+_lolcat_alias_block() {
+    cat << 'BLKEOF'
+# BEGIN terminal-kniferoll lolcat-alias — DO NOT EDIT (managed by installer)
+if command -v lolcrab >/dev/null 2>&1 && ! command -v lolcat >/dev/null 2>&1; then
+    alias lolcat='lolcrab'
+fi
+# END terminal-kniferoll lolcat-alias
+BLKEOF
+}
+
+_ff_alias_block() {
+    cat << 'BLKEOF'
+# BEGIN terminal-kniferoll ff-alias — DO NOT EDIT (managed by installer)
+if command -v fastfetch >/dev/null 2>&1 && command -v lolcrab >/dev/null 2>&1; then
+    alias ff='fastfetch | lolcrab'
+elif command -v fastfetch >/dev/null 2>&1; then
+    alias ff='fastfetch'
+fi
+# END terminal-kniferoll ff-alias
+BLKEOF
+}
+
+_fastfetch_greeter_block() {
+    cat << 'BLKEOF'
+# BEGIN terminal-kniferoll fastfetch-greeter — DO NOT EDIT (managed by installer)
+if [ -z "${TK_FASTFETCH_GREETED:-}" ] && [ -z "${DISABLE_WELCOME:-}" ] && \
+   command -v fastfetch >/dev/null 2>&1; then
+    if command -v lolcrab >/dev/null 2>&1; then
+        fastfetch | lolcrab
+    else
+        fastfetch
+    fi
+    export TK_FASTFETCH_GREETED=1
+fi
+# END terminal-kniferoll fastfetch-greeter
+BLKEOF
+}
+
+# Generic per-marker stripper. Strips a single BEGIN/END terminal-kniferoll
+# <marker> block from the file. Different from _strip_brew_shellenv_regions
+# which also cleans up bare `eval "$(brew shellenv)"` lines.
+_strip_marker_block() {
+    local file="$1" marker="$2"
+    awk -v m="$marker" '
+        $0 ~ ("^# BEGIN terminal-kniferoll " m "( |$)") { skip=1; next }
+        $0 ~ ("^# END terminal-kniferoll " m "( |$)")   { skip=0; next }
+        skip                                              { next }
+        { print }
+    ' "$file"
+}
+
+# Generic upsert: rc, dry, block-emitter fn, marker-name.
+upsert_marker_block() {
+    local rc="$1" dry="$2" block_fn="$3" marker="$4"
+    [[ ! -f "$rc" ]] && return 0
+    local _blk; _blk="$(mktemp)"; chmod 600 "$_blk"
+    "$block_fn" > "$_blk"
+    local _clean; _clean="$(mktemp)"; chmod 600 "$_clean"
+    local _final; _final="$(mktemp)"; chmod 600 "$_final"
+    _strip_marker_block "$rc" "$marker" > "$_clean"
+    local _clean_content
+    _clean_content="$(cat "$_clean")"
+    rm -f "$_clean"
+    if [[ -n "$_clean_content" ]]; then
+        { printf '%s\n' "$_clean_content"; echo; cat "$_blk"; } > "$_final"
+    else
+        cat "$_blk" > "$_final"
+    fi
+    rm -f "$_blk"
+    if cmp -s "$_final" "$rc"; then
+        rm -f "$_final"
+        return 0
+    fi
+    if [[ -n "$dry" ]]; then
+        info "  [dry-run] sweep ($marker): $rc"
+        rm -f "$_final"
+        return 0
+    fi
+    backup_rc_file "$rc"
+    mv -f "$_final" "$rc"
+    ok "$rc: $marker block upserted"
+}
+
+# Sweep all POSIX RC files for the rainbow / fastfetch trio. Runs every
+# invocation regardless of whether lolcrab/fastfetch are installed — the
+# blocks themselves runtime-check `command -v` so they're inert when the
+# tools are missing.
+sweep_rainbow_blocks() {
+    local dry=""
+    [[ "${1:-}" == "--dry-run" ]] && dry="1"
+    banner "FASTFETCH/LOLCRAB RC SWEEP${dry:+ (DRY RUN)}"
+    local _rc
+    for _rc in \
+        "$HOME/.zshrc" \
+        "$HOME/.zprofile" \
+        "$HOME/.bashrc" \
+        "$HOME/.bash_profile" \
+        "$HOME/.profile"
+    do
+        if [[ -f "$_rc" ]]; then
+            upsert_marker_block "$_rc" "$dry" "_lolcat_alias_block"      "lolcat-alias"
+            upsert_marker_block "$_rc" "$dry" "_ff_alias_block"          "ff-alias"
+            upsert_marker_block "$_rc" "$dry" "_fastfetch_greeter_block" "fastfetch-greeter"
+        fi
+    done
+    unset _rc
+}
+
 # ── Split-terminal UI (tk-022) ────────────────────────────────────────────────
 # shellcheck source=lib/split_terminal.sh
 source "$SCRIPT_DIR/lib/split_terminal.sh"
@@ -1535,8 +1685,12 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         run_optional "Installing wtfis via pipx" pipx install wtfis
         run_optional "Configuring pipx path"     pipx ensurepath
     }
-    is_installed "lolcat" || \
-        run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
+    # lolcrab — Rust port of lolcat, single static binary, drop-in CLI.
+    # Replaces gem install lolcat (RubyGems MEDIUM risk) with cargo (crates.io
+    # hash-verified) on apt; AUR (lolcrab-bin / lolcrab) preferred on Arch.
+    # lolcat → lolcrab backwards-compat alias is added by the rainbow-block
+    # sweep at the end of this script (no Ruby gem ever installed).
+    install_lolcrab
 
     # pip upgrade + TLS smoke test
     # 'local' is only valid inside a function; use plain assignment here.
@@ -1615,6 +1769,12 @@ fi
 # ── ZSCALER ENV FILE + RC SWEEP (every invocation, any mode) ─────────────────
 write_zscaler_env_file
 sweep_rc_files
+
+# ── FASTFETCH/LOLCRAB RC SWEEP (every invocation, any mode) ──────────────────
+# Idempotent: rewrites the three managed blocks (lolcat-alias, ff-alias,
+# fastfetch-greeter) in every POSIX RC file. Block bodies runtime-check
+# command -v lolcrab/fastfetch so they no-op when the tools are missing.
+sweep_rainbow_blocks
 
 # ── BREW SHELLENV RC SWEEP (idempotent; re-run in case brew was just installed)
 if is_installed "brew" || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]] || \

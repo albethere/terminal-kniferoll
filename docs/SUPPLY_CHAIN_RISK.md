@@ -1,5 +1,5 @@
 # Supply Chain Risk Analysis — terminal-kniferoll
-Updated: 2026-04-05 (supply chain hardening sweep #2)
+Updated: 2026-05-02 (lolcat → lolcrab swap)
 
 ## Summary
 
@@ -80,7 +80,7 @@ SC_ALLOW_RISKY=1      # Shorthand for SC_RISK_TOLERANCE=3
 | atuin (cargo, Windows) | crates.io | NO (latest) | crates.io checksums | cargo install | MEDIUM | crates.io provides hash verification |
 | cbonsai | apt / AUR | distro-managed | Package manager signatures | package manager | LOW/MEDIUM | LOW on apt/brew; MEDIUM on AUR (user scripts) |
 | cmatrix | apt / brew / scoop | distro-managed | Package manager signatures | package manager | LOW | Available in standard repos |
-| lolcat | RubyGems (gem install) | NO | None | gem install | MEDIUM | No checksum; gem registry trust |
+| lolcrab | crates.io / winget / scoop | NO (latest) | crates.io / winget hash verification | cargo install / winget / scoop / AUR | LOW | Replaced lolcat (RubyGems) 2026-05-02; cascade falls through cleanly. lolcat → lolcrab alias added by installer for backwards compat |
 | wtfis | PyPI (pipx install) | NO | PyPI integrity | pipx install | LOW | PyPI provides hash verification |
 | Gemini CLI | brew / npm @google/gemini-cli | NO | brew/npm registry | package manager | MEDIUM | npm global install; no pinned version |
 | Oh My Posh (Windows) | winget (JanDeDobbeleer.OhMyPosh) | NO | winget hash verify | winget | LOW | winget verifies packages |
@@ -191,10 +191,11 @@ These items were identified but not implemented to avoid breaking install flow. 
 - **Value**: Moderate — lightweight weather CLI tool used in the projector stack
 - **Recommendation**: KEEP, but add `--version` pin as a deferred task
 
-### lolcat — KEEP
-- **Risk**: MEDIUM — `gem install lolcat` from RubyGems. Ruby gem registry is community-maintained.
-- **Value**: Low (aesthetic output colorizing for fastfetch alias)
-- **Recommendation**: KEEP on macOS (brew provides it). On Linux, consider replacing `gem install lolcat` with the apt package where available, or remove the alias if not installed.
+### lolcrab — KEEP (replaced lolcat 2026-05-02)
+- **Risk**: LOW — Rust port of lolcat, single static binary. Distribution channels (crates.io, winget, scoop, AUR) all hash-verify packages. Ruby dependency eliminated across the fleet.
+- **Value**: Low (aesthetic output colorizing for fastfetch alias / greeter)
+- **Recommendation**: KEEP. Cross-OS cascade is winget/scoop/cargo on Windows, brew (when available) → cargo on macOS, cargo (apt path) / AUR (Arch path) on Linux. A `lolcat → lolcrab` backwards-compat alias is added by the installer's rainbow-block sweep so muscle-memory and any external scripts referencing `lolcat` continue to work.
+- **History**: Replaced `gem install lolcat` (Ruby gem, no checksum, MEDIUM risk) — same hardening pattern as the 2026-04-05 mise/atuin/uv removals. See commit history for the swap.
 
 ### sd — **REMOVED**
 - **Risk**: MEDIUM (was cargo install from crates.io)
