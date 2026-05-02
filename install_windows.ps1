@@ -2154,6 +2154,31 @@ function Install-Projector {
     Write-Section "Projector Stack"
 
     Install-Winget 'Fastfetch-cli.Fastfetch' 'fastfetch'    'fastfetch'
+
+    # lolcrab — Rust port of lolcat (single static binary, drop-in CLI).
+    # Cascade: winget → scoop → cargo. winget/scoop hash-verify; crates.io
+    # provides hash verification too. Greeter falls through to plain
+    # fastfetch if all three fail (block uses `command -v`).
+    if (-not (Test-Cmd lolcrab)) {
+        # Winget search returns 0 even on no-match, so we check stdout.
+        if (Test-Cmd winget) {
+            $wgHit = winget search --id lolcrab --exact --source winget 2>$null |
+                     Select-String -Pattern '^lolcrab' -SimpleMatch
+            if ($wgHit) {
+                Install-Winget 'lolcrab' 'lolcrab' 'lolcrab'
+            }
+        }
+    }
+    if (-not (Test-Cmd lolcrab) -and (Test-Cmd scoop)) {
+        Install-Scoop 'lolcrab' 'lolcrab' 'lolcrab'
+    }
+    if (-not (Test-Cmd lolcrab) -and (Test-Cmd cargo)) {
+        Install-Cargo 'lolcrab' 'lolcrab' 'lolcrab'
+    }
+    if (-not (Test-Cmd lolcrab)) {
+        Write-Warn "lolcrab not installed -- fastfetch greeter will fall through to plain output"
+    }
+
     Install-Scoop  'cmatrix'                 'cmatrix'      'cmatrix'
 
     # cbonsai has no native Windows binary

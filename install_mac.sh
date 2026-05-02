@@ -522,6 +522,35 @@ ensure_rust_toolchain() {
     fi
 }
 
+# ── Feature: install lolcrab (rainbow CLI) — cascade ─────────────────────────
+# Replaces gem/brew lolcat with lolcrab (Rust port, drop-in CLI).
+# Cascade: brew formula (if available) → cargo install (crates.io, hash-verified).
+# As of this writing, lolcrab is not in homebrew-core; the cargo path is the
+# realistic install on macOS. The lolcat → lolcrab backwards-compat alias is
+# added by the rainbow-block sweep at the end of this script.
+install_lolcrab() {
+    if is_installed "lolcrab"; then skip "lolcrab already installed"; return 0; fi
+
+    # Path 1: Homebrew formula (verify at runtime — no formula in core today,
+    # but pick it up automatically once it lands).
+    if is_installed "brew" && \
+       brew search --formula '/^lolcrab$/' 2>/dev/null | grep -qx 'lolcrab'; then
+        run_optional "Installing lolcrab via Homebrew" brew install lolcrab
+        is_installed "lolcrab" && return 0
+    fi
+
+    # Path 2: cargo install (crates.io provides hash verification)
+    ensure_rust_toolchain
+    if is_installed "cargo"; then
+        run_optional "Installing lolcrab via cargo" cargo install lolcrab
+        is_installed "lolcrab" && return 0
+    fi
+
+    warn "lolcrab install failed — fastfetch greeter will fall through to plain output"
+    FAILED_TOOLS+=("lolcrab")
+    return 0
+}
+
 # ── Mission summary ───────────────────────────────────────────────────────────
 print_summary() {
     banner "MISSION DEBRIEF"
@@ -1187,7 +1216,7 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
     DEV_PACKAGES=(
         bat binutils btop cbonsai cmatrix exiftool
         fastfetch fontconfig freetype fzf gcc gh git gzip
-        harfbuzz hexyl jq lolcat lsd lua lz4 lzo m4 micro ncurses
+        harfbuzz hexyl jq lsd lua lz4 lzo m4 micro ncurses
         nushell speedtest-cli sqlite starship tealdeer tmux
         yazi zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
         # Language runtimes
@@ -1200,6 +1229,12 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
             run_optional "Installing $pkg" brew install "$pkg" || FAILED_TOOLS+=("$pkg")
         fi
     done
+
+    # lolcrab — Rust port of lolcat (drop-in CLI). Replaces brew install lolcat
+    # (Ruby dependency) with cargo install (crates.io hash-verified). The
+    # lolcat → lolcrab backwards-compat alias is added by the rainbow-block
+    # sweep at the end of this script.
+    install_lolcrab
 
     # Upgrade pip and run TLS smoke tests.
     # PIP_CERT is already set if Zscaler is active, so pip inherits the CA bundle.

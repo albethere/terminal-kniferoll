@@ -508,6 +508,42 @@ cargo_install() {
     else warn "cargo install failed for $name"; FAILED_TOOLS+=("${name}(cargo)"); fi
 }
 
+# ── Helper: install lolcrab (rainbow CLI) — cascade ──────────────────────────
+# Cascade order:
+#   1. AUR (lolcrab-bin → lolcrab) on Arch when an AUR helper is available.
+#   2. cargo install lolcrab (crates.io, hash-verified). Linuxbrew has no
+#      lolcrab formula; apt does not package it.
+#
+# The lolcat → lolcrab backwards-compat alias is added by the rainbow-block
+# sweep at the end of this script. Failure is non-fatal — the fastfetch
+# greeter falls through to plain (non-rainbow) fastfetch.
+install_lolcrab() {
+    if is_installed "lolcrab"; then skip "lolcrab already installed"; return 0; fi
+
+    # Path 1: AUR (Arch only)
+    if [[ "$PKG_MGR" == "pacman" ]] && [[ -n "${AUR_HELPER:-}" ]] && \
+       command -v "$AUR_HELPER" &>/dev/null; then
+        local _pkg
+        for _pkg in lolcrab-bin lolcrab; do
+            if "$AUR_HELPER" -Si "$_pkg" &>/dev/null; then
+                run_optional "Installing $_pkg ($AUR_HELPER)" \
+                    "$AUR_HELPER" -S --noconfirm "$_pkg"
+                is_installed "lolcrab" && return 0
+                break
+            fi
+        done
+    fi
+
+    # Path 2: cargo (works on apt + pacman; crates.io hash-verified)
+    ensure_rust_toolchain
+    cargo_install "lolcrab" "lolcrab" "lolcrab (rainbow output)"
+    is_installed "lolcrab" && return 0
+
+    warn "lolcrab install failed — fastfetch greeter will fall through to plain output"
+    FAILED_TOOLS+=("lolcrab")
+    return 0
+}
+
 # ── Helper: install .deb from GitHub releases (arch-aware, with SHA256 verify) ─
 install_github_deb() {
     local check_bin="$1" repo="$2" pattern="$3" name="$4"
@@ -1521,8 +1557,12 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         run_optional "Installing wtfis via pipx" pipx install wtfis
         run_optional "Configuring pipx path"     pipx ensurepath
     }
-    is_installed "lolcat" || \
-        run_optional "Installing lolcat via gem" bash -c "$SUDO gem install lolcat"
+    # lolcrab — Rust port of lolcat, single static binary, drop-in CLI.
+    # Replaces gem install lolcat (RubyGems MEDIUM risk) with cargo (crates.io
+    # hash-verified) on apt; AUR (lolcrab-bin / lolcrab) preferred on Arch.
+    # lolcat → lolcrab backwards-compat alias is added by the rainbow-block
+    # sweep at the end of this script (no Ruby gem ever installed).
+    install_lolcrab
 
     # pip upgrade + TLS smoke test
     # 'local' is only valid inside a function; use plain assignment here.
