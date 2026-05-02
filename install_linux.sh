@@ -820,6 +820,38 @@ _brew_outdated_report() {
     fi
 }
 
+# ── Helper: install a list of bin:formula pairs via brew ─────────────────────
+# Splits out from apt_batch for tools that are NOT reliably in Debian/Ubuntu
+# apt repos (cbonsai isn't in apt at all; starship/zoxide are only in 22.04+
+# universe). Also fails loud if brew isn't on PATH instead of silently
+# poisoning the install run — `apt-get install A B C` is atomic, so one
+# missing package cascades and breaks every other tool in the batch.
+brew_extras_install() {
+    local section="$1"; shift
+    banner "$section"
+    if ! command -v brew &>/dev/null; then
+        # install_homebrew_and_gemini eval'd shellenv at line 874 — if brew
+        # still isn't reachable, surface the install path that should have
+        # worked rather than failing silently.
+        err "brew not in PATH — these tools cannot be installed: $*"
+        err "expected brew at /home/linuxbrew/.linuxbrew/bin/brew or \$HOME/.linuxbrew/bin/brew"
+        local entry
+        for entry in "$@"; do
+            FAILED_TOOLS+=("${entry%%:*}(no-brew)")
+        done
+        return 1
+    fi
+    local entry bin formula
+    for entry in "$@"; do
+        bin="${entry%%:*}"; formula="${entry##*:}"
+        if is_installed "$bin"; then
+            skip "$bin already installed"
+        else
+            _brew_install_verified "$formula" || true
+        fi
+    done
+}
+
 # ── Helper: brew install with post-install verification ──────────────────────
 # `brew install` can return 0 on partial failure (network glitches mid-fetch,
 # postinstall script failures, etc.). Verify the formula actually appears in
@@ -1720,10 +1752,17 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         apt_batch "PYTHON AND PACKAGE MANAGEMENT" \
             "pipx:pipx" "python3:python3-venv"
 
-        apt_batch "SHELL EXTRAS" \
+        # SHELL EXTRAS is split into apt (reliably-in-apt) and brew
+        # (needs-brew) batches. The previous combined batch was poisoned by
+        # starship/zoxide/cbonsai (not in older Ubuntu/Pop!_OS apt) — when
+        # any one of those fails to locate, `apt-get install` errors out
+        # atomically and installs NONE of the others, including cmatrix and
+        # rclone which DO exist in apt.
+        apt_batch "SHELL EXTRAS (apt)" \
             "rclone:rclone" "speedtest-cli:speedtest-cli" "unzip:unzip" \
-            "fastfetch:fastfetch" "zoxide:zoxide" "starship:starship" \
-            "cmatrix:cmatrix" "cbonsai:cbonsai"
+            "fastfetch:fastfetch" "cmatrix:cmatrix"
+        brew_extras_install "SHELL EXTRAS (brew)" \
+            "zoxide:zoxide" "starship:starship" "cbonsai:cbonsai"
 
         # Tools requiring non-apt installation methods
         # uv — safe install only (astral.sh custom-domain script removed)
