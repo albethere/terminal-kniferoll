@@ -1040,7 +1040,7 @@ fi
 
 # Fix Homebrew share directory permissions to prevent oh-my-zsh compaudit warnings.
 # Homebrew sets /opt/homebrew/share group-writable (admin), which OMZ flags as insecure.
-if [[ -d /opt/homebrew/share ]]; then
+if [[ -d /opt/homebrew/share && -O /opt/homebrew/share ]]; then
     run_optional "Hardening /opt/homebrew/share permissions" \
         chmod g-w,o-w /opt/homebrew/share
 fi
