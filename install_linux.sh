@@ -664,9 +664,31 @@ install_yazi_binary() {
 # toolchain dir already exists in a partial state, rustup leaves it as-is.
 # `rustup toolchain install stable` is the canonical idempotent operation
 # that re-fetches the manifest and binaries.
+#
+# Caveat: on Debian/Ubuntu, `apt install rustup` ships a *stub* at
+# /usr/bin/rustup that prints "rustup is not installed" and exits 1 until
+# `rustup-init` has run.  We detect that and treat the stub as "no rustup
+# present" so we bootstrap real rustup instead of trying to drive the stub.
+_rustup_works() {
+    is_installed "rustup" || return 1
+    # Real rustup: `rustup --version` exits 0 and prints "rustup x.y.z (...)".
+    # Debian stub: exits 1 and prints "rustup is not installed at ...".
+    rustup --version &>/dev/null
+}
 ensure_rust_toolchain() {
-    # 1. Bootstrap rustup only if neither cargo nor rustup is present.
-    if ! is_installed "cargo" && ! is_installed "rustup"; then
+    # Memoize: this function may be invoked from both DO_SECURITY (nushell)
+    # and DO_PROJECTOR (weathr/trippy). Avoid the duplicate manifest fetch.
+    [[ "${_RUST_TOOLCHAIN_CHECKED:-0}" == "1" ]] && return 0
+
+    # Track whether we actually attempted rustup-driven repair this run.
+    # The final rustc -vV sanity check should only flag the toolchain as
+    # broken if we tried to repair it — otherwise an apt-only rustc/cargo
+    # box that was working fine would be falsely marked broken.
+    local _attempted_repair=0
+
+    # 1. Bootstrap rustup if neither cargo nor a real rustup is present.
+    #    (apt's rustup stub does NOT count as rustup here.)
+    if ! is_installed "cargo" && ! _rustup_works; then
         local rustup_script
         rustup_script="$(download_to_tmp "https://sh.rustup.rs" "rustup-init-XXXXXX.sh")"
         run_optional "Installing Rust via rustup" \
@@ -674,23 +696,29 @@ ensure_rust_toolchain() {
                 --default-toolchain stable --profile minimal --no-modify-path
         rm -f "$rustup_script"
         [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
+        _attempted_repair=1
     fi
-    # 2. If rustup is present, force-install the stable toolchain manifest.
-    if is_installed "rustup"; then
+    # 2. If a real rustup is present, force-install the stable toolchain
+    #    manifest.  Skip when only the apt stub is on PATH — driving the
+    #    stub would always fail and would falsely poison the broken flag.
+    if _rustup_works; then
         run_optional "Ensuring stable toolchain manifest (rustup toolchain install stable)" \
             rustup toolchain install stable --profile minimal --no-self-update
         run_optional "Setting rustup default to stable" \
             rustup default stable
         [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env" || true
+        _attempted_repair=1
     fi
-    # 3. Final sanity check: rustc must actually run. If not, mark the
-    #    toolchain broken so cargo_install skips cleanly with one clear
-    #    message instead of repeating the same error per crate.
-    if is_installed "cargo" && ! rustc -vV &>/dev/null; then
+    # 3. Final sanity check.  Only set the broken flag if we actually tried
+    #    to repair via rustup; an apt-only rustc/cargo box that never went
+    #    through rustup is none of our business.  Local (no export) — only
+    #    this script reads it; subprocesses don't need to know.
+    if (( _attempted_repair )) && is_installed "cargo" && ! rustc -vV &>/dev/null; then
         warn "Rust toolchain is broken (rustc -vV failed) — cargo installs will be skipped"
         warn "  remediation: run 'rustup toolchain install stable' manually, then re-run installer"
-        export _RUST_TOOLCHAIN_BROKEN=1
+        _RUST_TOOLCHAIN_BROKEN=1
     fi
+    _RUST_TOOLCHAIN_CHECKED=1
 }
 
 # ── Feature: 1Password CLI ────────────────────────────────────────────────────
