@@ -2192,10 +2192,7 @@ if ($Script:FailedTools.Count -gt 0) {
 }
 
 if ($Script:DoShell) {
-    Write-Host '  Next steps:' -ForegroundColor White
-    Write-Host '    1. Restart your terminal (or run: . $PROFILE)' -ForegroundColor DarkCyan
-    Write-Host '    2. Set Windows Terminal font to a Nerd Font (e.g. CaskaydiaCove NF)' -ForegroundColor DarkCyan
-    Write-Host '    3. Enjoy your new shell.' -ForegroundColor DarkCyan
+    Write-Host '  Tip: set Windows Terminal font to a Nerd Font (e.g. CaskaydiaCove NF)' -ForegroundColor DarkCyan
 }
 if ($Script:WslPresent -and -not $Script:DoShell) {
     Write-Host '  WSL tip: run install_linux.sh inside WSL for the full Zsh experience' -ForegroundColor DarkYellow
@@ -2204,3 +2201,40 @@ if ($Script:WslPresent -and -not $Script:DoShell) {
 Write-Host ''
 Write-Host "  Full log: $Script:LogFile" -ForegroundColor DarkGray
 Write-Host ''
+
+# -----------------------------------------------------------------------------
+# RELOAD-PROFILE NOTICE (last visible output -- impossible to miss)
+#
+# Windows users were hitting "I installed everything but pwsh still shows the
+# default prompt". Cause: the profile file was written but the running shell
+# wasn't reloaded. This loud notice fires LAST so it's the final thing on
+# screen, not buried above FailedTools / WSL tip / log path.
+#
+# TODO(v2): mirror this idiom in install.sh / install_linux.sh / install_macos.sh
+# so Mac/Linux users also get the same impossible-to-miss reload prompt.
+# -----------------------------------------------------------------------------
+if ($Script:DoShell) {
+    if (Test-Cmd gum) {
+        & gum style `
+            --border 'double' `
+            --border-foreground $Script:CW.Yellow `
+            --foreground $Script:CW.BrightWhite `
+            --padding '1 4' `
+            --margin '1 2' `
+            --align 'left' `
+            "[!]  PowerShell profile updated -- shell is NOT yet active in this window`n`n     Reload it to pick up the new prompt, aliases, and Zscaler env:`n`n         . `$PROFILE`n`n     Or just close this window and open a fresh terminal."
+    } else {
+        Write-Host '  +==============================================================================+' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |  [!]  PowerShell profile updated -- shell is NOT yet active in this window  |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |       Reload it to pick up the new prompt, aliases, and Zscaler env:        |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |         . $PROFILE                                                           |' -ForegroundColor White
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |       Or just close this window and open a fresh terminal.                  |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  +==============================================================================+' -ForegroundColor Yellow
+        Write-Host ''
+    }
+}
