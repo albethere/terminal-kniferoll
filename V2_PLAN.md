@@ -124,7 +124,7 @@ The rewrite addresses all eight of these points by collapsing the matrix, separa
 
 ## 3. Target matrix
 
-Eight scripts. Four operating-system targets crossed with two security postures. No further axes — architecture (x86_64 / aarch64) is handled inside the Linux scripts as a matrix dimension, not a separate file, because the divergence is small and the duplication would buy nothing.
+Ten installer scripts. Five operating-system targets crossed with two security postures. No further axes — architecture (x86_64 / aarch64) is handled inside the Linux scripts as a matrix dimension, not a separate file, because the divergence is small and the duplication would buy nothing.
 
 | OS target | Posture | Repo | Entry | Notes |
 |-----------|---------|------|-------|-------|
@@ -132,10 +132,12 @@ Eight scripts. Four operating-system targets crossed with two security postures.
 | macOS (Apple Silicon, arm64) | managed | `silo-agent/kniferoll-managed-mac` | `install.sh` | Adds Zscaler/corp-CA detection, MDM-aware preflight, TLS-1.2 fallback. |
 | Windows 10/11 (x86_64) | unmanaged | `silo-agent/kniferoll-windows` | `install.ps1` | PowerShell 7+, winget primary, Scoop secondary. |
 | Windows 10/11 (x86_64) | managed | `silo-agent/kniferoll-managed-windows` | `install.ps1` | Adds corp-CA cert-store enumeration, `CARGO_HTTP_CAINFO`, group-policy-aware paths. |
-| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-deb` | `install.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. |
+| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-deb` | `install.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. Native Linux only — refuses on WSL2 (suggests `kniferoll-wsl2`). |
 | Linux Debian/Ubuntu (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-deb` | `install.sh` | Adds Zscaler/corp-CA paths under `/usr/local/share/ca-certificates/`, internal-mirror toggle (off by default). |
 | Linux Arch-family (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-arch` | `install.sh` | pacman + AUR helper detection; CachyOS, EndeavourOS, Manjaro all welcome. |
 | Linux Arch-family (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-arch` | `install.sh` | Same as above plus corp posture. Edge case: rolling release means version pins are looser; documented. |
+| WSL2 Debian/Ubuntu (x86_64) | unmanaged | `silo-agent/kniferoll-wsl2` | `install.sh` | Debian/Ubuntu inside WSL2 only; refuses on other WSL distros and on WSL1. Handles `/etc/resolv.conf` lock, `/etc/wsl.conf`, time drift. See §3.4. |
+| WSL2 Debian/Ubuntu (x86_64) | managed | `silo-agent/kniferoll-managed-wsl2` | `install.sh` | Same WSL2 handling plus corp-CA from the Windows trust store via `/mnt/c/`. See §3.4. |
 
 ### 3.1 Why Intel macOS is out of scope
 
@@ -147,15 +149,55 @@ x86_64 and aarch64 differ on Linux in three ways relevant to kniferoll: (a) some
 
 ### 3.3 What the matrix excludes and why
 
-- **WSL2** is folded into `silo-agent/kniferoll-linux-deb` (and `silo-agent/kniferoll-managed-linux-deb` if used in a corp environment) with a small `if-wsl` block that adjusts a few paths. WSL2 is Debian/Ubuntu running on a Microsoft hypervisor. It is not its own platform. (Open question: confirm with Chef.)
 - **NixOS / nix-darwin** is excluded — Nix users have a different system model and a vastly more capable installer (Home Manager). v2 should not pretend to compete in that space.
-- **FreeBSD / OpenBSD / Alpine / Fedora-RHEL family** are excluded as targets. They each have small but meaningful differences (different libc on Alpine, dnf on Fedora, ports on FreeBSD) that would each require a dedicated script. The four targets above cover ~95% of the kniferoll user base; the rest are documented as "you are welcome to fork."
+- **FreeBSD / OpenBSD / Alpine / Fedora-RHEL family** are excluded as targets. They each have small but meaningful differences (different libc on Alpine, dnf on Fedora, ports on FreeBSD) that would each require a dedicated script. The five targets above cover ~95% of the kniferoll user base; the rest are documented as "you are welcome to fork."
+- **WSL1** is explicitly refused — WSL2 is the supported boundary. WSL1's filesystem and process model differ enough that the WSL2 networking/wsl.conf dance doesn't transfer. The WSL2 script detects WSL1 in preflight and exits 2.
+
+### 3.4 Why WSL2 deserves its own script
+
+WSL2 looks like Debian/Ubuntu from the user's prompt — `apt`, `bash`, `/home`, the works. But the boot, network, and filesystem layers underneath are Microsoft's, not the kernel's, and they impose constraints that turn an `if-wsl` branch on the Debian script into a bog of special cases. v2 promotes WSL2 to its own pair of repos and treats it as a peer target.
+
+The non-trivial concerns that justify a dedicated script:
+
+**`/etc/resolv.conf` is regenerated on every reboot.** WSL2's default behavior (`network.generateResolvConf=true` in `/etc/wsl.conf`) re-creates `/etc/resolv.conf` from the Windows host's DNS servers each time the VM starts. Corporate Windows hosts often serve DNS that WSL2 cannot reach (split-horizon, internal-only resolvers); even on home machines the auto-generated content may point at IPv6-only resolvers or the host gateway, both of which fail in subtle ways. The fix is a four-step dance: stop the auto-generation in `/etc/wsl.conf`, write a known-good `/etc/resolv.conf`, lock the file with `sudo chattr +i /etc/resolv.conf` so it survives a `wsl --shutdown`, and reboot for `wsl.conf` to take effect. The unlock for future edits is `sudo chattr -i /etc/resolv.conf` — documented prominently because the immutable bit confuses anyone who later tries `sudo vi /etc/resolv.conf` and gets `operation not permitted`.
+
+**`/etc/wsl.conf` is the WSL-side master switch.** Beyond `[network] generateResolvConf=false`, the install writes:
+
+- `[boot] systemd=true` — enables systemd. Default-on in Win11 23H2+ but not earlier; force-enable for consistency. Required for any tool that registers a systemd unit, and for `systemd-timesyncd` (see time drift below).
+- `[interop] enabled=true` (default) and `appendWindowsPath=false` (opinionated) — keeps Windows PATH out of WSL2 unless the user explicitly imports it. The default `appendWindowsPath=true` produces a `$PATH` cluttered with Windows binaries that conflict with their Linux equivalents (`node`, `python`, `where`, etc.). Flipping to false is right for a dev environment, with a documented opt-in via flag for users who *do* want Windows binaries on PATH.
+- `[automount] enabled=true options="metadata,umask=22,fmask=11"` — `metadata` lets Linux respect `chmod`/`chown` on `/mnt/c/`, which matters for any tool that cares about file modes (gpg keys, ssh keys, anything `chmod 600`).
+
+Existing `/etc/wsl.conf` and `/etc/resolv.conf` are backed up timestamped before edit, per the §6.2 dotfile-edit principle.
+
+**Reboot required.** `/etc/wsl.conf` changes take effect after the WSL2 VM is shut down and restarted, which is a Windows-side operation: `wsl --shutdown` from PowerShell, then any subsequent `wsl` invocation cold-starts the VM with the new config. The install script's post-install summary prints: "Run `wsl --shutdown` from Windows PowerShell, then re-open WSL2, to apply the network changes."
+
+**Distro filtering.** The script detects WSL2 via `/proc/sys/kernel/osrelease` containing "microsoft" or "WSL" (case-insensitive) and the distro via `/etc/os-release`. If the distro isn't Debian or an Ubuntu LTS, the script exits 2 with a message telling the user this script is for Debian/Ubuntu under WSL2 only. Symmetrically, `kniferoll-linux-deb` detects WSL2 and exits 2, suggesting `kniferoll-wsl2`. WSL1 detected via `WSL_INTEROP` or kernel signature also exits 2.
+
+**Filesystem boundary.** The script never installs anything into `/mnt/c/` or any Windows-side path. All artifacts land in the Linux user's home directory. `/mnt/c/` is read-only-or-config-only — for instance, reading the corp CA bundle from a Windows-exported PEM (managed posture below).
+
+**Time drift.** WSL2's clock drifts after the Windows host sleeps and resumes. With `[boot] systemd=true` set above, the script `apt install systemd-timesyncd` and enables it, which keeps the clock close-enough across host sleeps. Documented in the post-install summary.
+
+**DNS choice.** `1.1.1.1` (Cloudflare) and `8.8.8.8` (Google) are the unmanaged defaults — public, fast, neutral. The managed script defaults differ: it tries to read corp DNS servers from the Windows host (`ipconfig /all` via interop) before falling back to the public defaults. Override with `--dns 9.9.9.9,1.0.0.1` or `KR_WSL_DNS=...`. A `kniferoll-wsl2 dns --set ...` companion handles the lock-edit-relock dance idempotently for users who want to change DNS later without thinking about `chattr`.
+
+**Memory cap.** `~/.wslconfig` on the Windows side (`%USERPROFILE%\.wslconfig`) is what caps WSL2's VM memory. The install script does *not* edit this — it lives in the Windows filesystem, requires Windows-side write access, and is per-user-on-Windows rather than per-WSL-distro. The post-install summary recommends: "If you haven't capped WSL2 memory yet, consider creating `%USERPROFILE%\.wslconfig` with `[wsl2] memory=8GB swap=2GB` (adjust to your machine)."
+
+**Networking modes.** Win11 23H2+ ships a `networkingMode=mirrored` option (in `~/.wslconfig`) that solves a class of corporate-VPN routing issues that the default NAT mode silently breaks. Documented; not auto-switched (Windows-side per-user setting).
+
+**Corp posture additions** (managed-wsl2 only). The corp CA usually lives in the Windows trust store, not the Linux trust store. The managed script reads it via one of three paths:
+
+1. `$KR_CA_BUNDLE` points at a Windows-exported PEM mounted via `/mnt/c/...` (recommended; user does the export once with a documented PowerShell one-liner).
+2. The corp CA is already deployed to the WSL2 distro's `/usr/local/share/ca-certificates/` (e.g., by IT image or a previous run); script verifies and runs `update-ca-certificates`.
+3. Auto-export via interop: `powershell.exe -Command "Get-ChildItem Cert:\LocalMachine\Root | Where-Object Subject -match '<corp-issuer>' | Export-Certificate -FilePath C:\temp\corp-ca.cer"`. Clever but fragile — behind a `--auto-export-ca` flag, off by default.
+
+Internal package mirrors (the §6.2 toggle) work from WSL2 only when the Windows host can reach them. If the corp VPN doesn't tunnel WSL2 traffic by default, the user is told to switch to mirrored networking mode (above) or ask IT to configure WSL2 routing. The script does not auto-fix VPN routing.
 
 ---
 
 ## 4. Naming convention
 
-Each repo is `silo-agent/kniferoll-<os>` (unmanaged) or `silo-agent/kniferoll-managed-<os>` (managed); inside every repo the entry script is `install.sh` (Unix) or `install.ps1` (Windows). The repo name carries the OS and posture, so the script name doesn't need to repeat them. Descriptive names beat themed ones for an installer: filenames are URL-legible, grep-able, and free of the insider-knowledge tax that codenames impose on new contributors. Kitchen-voice character belongs in `docs/FLAVOR.md` and the installer's runtime output, not in eight individual aliases. `mac` resolves to Apple Silicon (the only supported macOS arch); `linux-deb` covers Debian/Ubuntu and derivatives across x86_64 and aarch64; `linux-arch` covers Arch, EndeavourOS, Manjaro, CachyOS across the same two arches; `windows` is x86_64 only.
+Each repo is `silo-agent/kniferoll-<os>` (unmanaged) or `silo-agent/kniferoll-managed-<os>` (managed); inside every repo the entry script is `install.sh` (Unix) or `install.ps1` (Windows). The repo name carries the OS and posture, so the script name doesn't need to repeat them. Descriptive names beat themed ones for an installer: filenames are URL-legible, grep-able, and free of the insider-knowledge tax that codenames impose on new contributors. Kitchen-voice character belongs in `docs/FLAVOR.md` and the installer's runtime output, not in ten individual aliases.
+
+`mac` resolves to Apple Silicon (the only supported macOS arch); `linux-deb` covers native Debian/Ubuntu and derivatives across x86_64 and aarch64 (refuses to run on WSL2 — see `wsl2` below); `linux-arch` covers Arch, EndeavourOS, Manjaro, CachyOS across the same two arches; `windows` is x86_64 only; `wsl2` covers Debian/Ubuntu under WSL2 on x86_64 (Windows-on-ARM with aarch64 WSL2 is a fork-it-yourself case).
 
 ---
 
@@ -163,7 +205,7 @@ Each repo is `silo-agent/kniferoll-<os>` (unmanaged) or `silo-agent/kniferoll-ma
 
 ### 5.1 Layout
 
-Ten repos total: eight per-OS installer repos plus two coordination repos. The eight per-OS repos exist; the two coordination repos are scoped in §5b and to-be-created.
+Thirteen repos when complete: ten per-OS installer repos, two coordination repos, one ancillary projector repo. Eight of the per-OS repos exist; five repos are still to be created.
 
 **Per-OS repos (extant under `silo-agent`, `albethere` admin):**
 
@@ -178,12 +220,25 @@ Ten repos total: eight per-OS installer repos plus two coordination repos. The e
 | Private | `silo-agent/kniferoll-managed-linux-deb` | managed |
 | Private | `silo-agent/kniferoll-managed-linux-arch` | managed |
 
+**Per-OS repos (to be created — WSL2 promotion, see §3.4):**
+
+| Visibility | Repo | Posture |
+|------------|------|---------|
+| Public | `silo-agent/kniferoll-wsl2` | unmanaged |
+| Private | `silo-agent/kniferoll-managed-wsl2` | managed |
+
 **Coordination repos (to be created — see §5b):**
 
 | Visibility | Repo | Role |
 |------------|------|------|
 | Public | `silo-agent/kniferoll-unpack` | Public-posture coordinator. Carries the user-facing `unpack` dispatcher AND the canonical shared `lib/`. |
 | Private | `silo-agent/kniferoll-managed-unpack` | Managed-posture coordinator. Carries the corp-flavored `unpack` dispatcher AND the managed-only `managed-lib/`. |
+
+**Ancillary repo (to be created — projector split-off, see §9 resolved):**
+
+| Visibility | Repo | Role |
+|------------|------|------|
+| Public | `silo-agent/kniferoll-projector` | Optional terminal-animation orchestrator. Decoupled from the installer. Each per-OS repo's `--projector` flag clones and invokes it; nothing in the projector ships in the per-OS default tool inventory. |
 
 Inside each per-OS repo the entry script is `install.sh` (Unix repos) or `install.ps1` (Windows repos). The repo name disambiguates the OS and posture; the entry script doesn't need to repeat that information. A user can either go through the unpack dispatcher (the OS-agnostic happy path, §5b.4) or clone the per-OS repo directly:
 
@@ -194,6 +249,36 @@ cd kniferoll-mac
 ```
 
 `silo-agent` is a personal GitHub account today, with potential to convert to an org later. The access grants on each repo were issued in the per-collaborator form, which keeps working unchanged after a personal-to-org conversion. If/when conversion happens, an `admins` team grant becomes the more ergonomic shape; that's a one-time migration and is not blocking.
+
+**Commands for creating the five new repos and granting `albethere` admin** (run as `silo-agent` once you're ready):
+
+```
+# Public: WSL2 unmanaged, both unpack/coordination, projector ancillary
+gh repo create silo-agent/kniferoll-wsl2 --public \
+  --description "Opinionated terminal-environment installer for WSL2 Debian/Ubuntu"
+gh repo create silo-agent/kniferoll-unpack --public \
+  --description "Public-posture coordinator + canonical shared lib for the kniferoll family"
+gh repo create silo-agent/kniferoll-projector --public \
+  --description "Optional terminal-animation orchestrator (opt-in companion to the kniferoll installers)"
+
+# Private: WSL2 managed, managed-unpack
+gh repo create silo-agent/kniferoll-managed-wsl2 --private \
+  --description "Corporate-CA-aware terminal-environment installer for WSL2 Debian/Ubuntu"
+gh repo create silo-agent/kniferoll-managed-unpack --private \
+  --description "Managed-posture coordinator + managed-lib for the kniferoll family"
+
+# Admin grants for albethere on all five
+for r in kniferoll-wsl2 kniferoll-unpack kniferoll-projector \
+         kniferoll-managed-wsl2 kniferoll-managed-unpack; do
+  gh api repos/silo-agent/$r/collaborators/albethere -X PUT -f permission=admin
+done
+
+# Discoverability topics on the four new public repos (reuse + adjust per repo if useful)
+for r in kniferoll-wsl2 kniferoll-unpack kniferoll-projector; do
+  gh api repos/silo-agent/$r/topics -X PUT \
+    -f names='["kniferoll","terminal","installer","dotfiles","zsh","powershell"]'
+done
+```
 
 ### 5.2 Public/private split
 
@@ -415,7 +500,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 
 ### 6.1 Simplicity
 
-- **One script per (OS × posture).** No dynamic dispatch, no plugin abstraction, no per-tool framework. The eight scripts are eight standalone artifacts. A user can read any one of them in one sitting.
+- **One script per (OS × posture).** No dynamic dispatch, no plugin abstraction, no per-tool framework. The ten scripts are ten standalone artifacts. A user can read any one of them in one sitting.
 - **Tools are inline data, not a plugin system.** The tool inventory is a top-of-file array (or hash) read once. Adding a tool is one line; removing a tool is one line; auditing the inventory is reading the array. No `register_tool()` callbacks.
 - **POSIX bash for Unix, PowerShell 7 for Windows.** No Python in the install path, no Go binary as a hard dependency, no third-party CLI required to run the installer. The Go TUI selector and the Python projector are post-install conveniences that live in their own packages.
 - **No dispatcher.** The v1 `install.sh` exists because the three platform scripts share a name and a directory; v2 puts each script in its own repo, so each repo's `install.sh` (or `install.ps1`) is unambiguously the one for that target. There is no universal entrypoint, and that is correct: there is no universal install.
@@ -427,6 +512,8 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 
 - **No `curl | bash` anywhere.** Every download lands as a file in a temp directory, gets its SHA256 verified against a checksum that is committed to the repo, and only then is executed (if executable) or moved into place (if a binary). The Homebrew bootstrap pattern in v1 (`download_to_tmp` + verified write) is the right pattern; v2 enforces it without exception.
 - **Pinned versions and pinned checksums for every download.** No "latest." Bumping a version is an explicit PR with an updated checksum line. The Nerd Fonts soft-warn-and-continue pattern at `install_mac.sh:1369-1384` becomes a hard-fail.
+- **Cooling-off period: 7 days from upstream release.** When pinning a new version of any tool, font, or cargo crate, maintainers wait at least 7 days from the upstream release date before merging the bump PR. Most supply-chain attacks (yanked malicious packages, compromised maintainer accounts, registry takeovers) get caught within hours-to-days; a 7-day floor lets the community immune system do its work before kniferoll's CI starts feeding compromised artifacts to users. The pinned-version table records `released_at` ISO date alongside each version string; CI on bump PRs verifies `today - released_at >= 7 days` and fails otherwise. Emergency security bumps (CVEs, urgent patches) override via `--allow-fresh` with a documented reason in the PR body.
+- **Lean dependency surface.** Every tool in the default inventory earns its slot. The projector stack (weathr, trippy, the animation runtime) lives in `silo-agent/kniferoll-projector` and is opt-in via `--projector` — none of it lands in a per-OS repo's default install. If a tool is "nice to have" but not load-bearing for the shell experience, it goes in an opt-in flag, not the default. Smaller default inventory means fewer pinned versions to track, fewer CVE windows, fewer cooling-off-period bumps to coordinate.
 - **Refuse to run as root unless explicitly invoked with `--root` and a documented reason.** The v1 scripts require sudo for individual operations (`sudo apt`, etc.) and that pattern continues — but the script itself runs as the user, never as root. `--root` is reserved for VM-bootstrap or container-image-build scenarios where there is no user yet.
 - **Explicit handling of corp TLS interception in managed scripts only.** Managed scripts take a CA bundle path via `--ca-bundle` flag or `KR_CA_BUNDLE` env var (with auto-detection as fallback) and propagate it to: `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `PIP_CERT`, `CARGO_HTTP_CAINFO` (Windows), `HOMEBREW_CURLOPT_CACERT` (macOS). Unmanaged scripts have no concept of a corp CA and refuse to read these env vars even if set — managed work belongs in managed scripts.
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
@@ -536,6 +623,10 @@ Last-resort: sequential yes/no prompts (the equivalent of v1's `show_custom_menu
 
 gum primary (from AUR via the configured helper, or from charmbracelet's release binary), whiptail fallback (from `core`, bundled with `libnewt`). Sequential as last-resort. The only divergence from Debian is the install command if gum is missing during preflight: `pacman -S gum` or `<aur-helper> -S gum-bin` instead of `apt install`.
 
+**WSL2 (`kniferoll-wsl2` / `kniferoll-managed-wsl2`) — inherits the Debian implementation.**
+
+WSL2 uses the same gum-primary, whiptail-fallback chain as `kniferoll-linux-deb`; the Linux TUI implementation is sourced from the same place (subtreed `lib/`). The only WSL2-specific TUI consideration is that the corp-CA preflight banner (§6b.4) reads from `/mnt/c/...` paths in addition to the standard Linux trust-store paths. No new TUI code; just one more entry in the auto-detect path list.
+
 **Windows (`kniferoll-windows` / `kniferoll-managed-windows`) — pure PowerShell, idiomatic.**
 
 Not a port of the bash TUI shape. Written PowerShell-first.
@@ -588,7 +679,7 @@ These divergences are intentional and called out in the docs. Uniformity-by-pret
 
 ## 7. Per-script structure
 
-Every one of the eight scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-unpack/lib/SKELETON.md` and is subtreed alongside the rest of `lib/` into every per-OS repo; new scripts are diffs against the skeleton.
+Every one of the ten scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-unpack/lib/SKELETON.md` and is subtreed alongside the rest of `lib/` into every per-OS repo; new scripts are diffs against the skeleton.
 
 **Header block.** Shebang (`#!/usr/bin/env bash` or `#!/usr/bin/env pwsh`), strict mode (`set -Eeuo pipefail` for bash, `Set-StrictMode -Version Latest` and `$ErrorActionPreference = 'Stop'` for PowerShell), then a 10-line comment header: repo name, target OS, posture, version, build date, source repo URL, license, brief description, link to docs, the `kniferoll-unpack@<tag>` the subtreed `lib/` was sourced from (read from `lib/VERSION`).
 
@@ -605,7 +696,7 @@ Each preflight failure prints the specific reason and exits with the matching co
 
 **Idempotency contract.** Running the script twice in succession on a clean state produces the same final state. Running it twice on a partially-completed state catches up the partial install without redoing finished work. Running it with `--force` reinstalls everything regardless of state.
 
-**Mode flags** (uniform across all eight scripts):
+**Mode flags** (uniform across all ten scripts):
 
 - `--apply` (default): execute the install.
 - `--dry-run`: print every step that would execute, every file that would change, every package that would be installed, every diff that would be applied — change nothing.
@@ -667,7 +758,7 @@ Eleven projects in the adjacent space. For each: what it does, where it beats kn
 
 ### 8.1 Where kniferoll v2 fits
 
-kniferoll v2's niche is **opinionated, multi-OS, corp-CA-aware, beautiful, single-step terminal-environment setup for security/dev/SRE practitioners who work across personal and corporate machines**. The four-target × two-posture matrix is the differentiator: no other tool in this list cleanly handles "I have a personal MacBook, a work Windows laptop with Zscaler, and a Raspberry Pi 4 in my closet running Ubuntu" with matched-quality first-class scripts for each.
+kniferoll v2's niche is **opinionated, multi-OS, corp-CA-aware, beautiful, single-step terminal-environment setup for security/dev/SRE practitioners who work across personal and corporate machines**. The five-target × two-posture matrix is the differentiator: no other tool in this list cleanly handles "I have a personal MacBook, a work Windows laptop with Zscaler, an Ubuntu desktop at home, a corp WSL2 environment for daily work, and a Raspberry Pi 4 in my closet" with matched-quality first-class scripts for each.
 
 The realistic user is someone who:
 - works in security or backend dev or SRE,
@@ -685,25 +776,28 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 ## 9. Open questions
 
-Three remain. Everything else is resolved (see below) or scoped to a phase boundary.
+One remains. Everything else is resolved (see below) or scoped to a phase boundary.
 
-1. **WSL2 status.** Fold WSL2 into `silo-agent/kniferoll-linux-deb` (and the managed twin if needed) with a small `if-wsl` branch, or promote to a ninth target? WSL2 is Debian-on-Hyper-V and doesn't justify its own script unless the corporate WSL2 setup (custom rootfs, internal mirrors, MDM hooks into the Hyper-V layer) materially changes the math.
-2. **Projector disposition.** v1 bundles a Python animation orchestrator (`projector.py`) that has nothing to do with installation. Recommendation: split it into `silo-agent/kniferoll-projector` so the install scripts stay shell-native and dependency-light. (TUI selector — the other v1 ancillary — is now resolved per §6b: it's in-script per-OS, not a separate binary.)
-3. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), `gum` (Windows-only in v1 — promote to all platforms or remove? — note §6b recommends gum for Linux TUI), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). Needs an answer before phase 5.
+1. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). The `gum` part of this question is implicitly resolved by §6b's TUI recommendation (gum is in-scope on Linux as the TUI primary; whether it's *also* a user-facing tool is a separate inventory call). Needs an answer before phase 6.
 
-**Phase-5 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 5.
+**Phase-6 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 6.
 
 ### Resolved
 
 - **Naming.** Flat: `kniferoll-<os>` and `kniferoll-managed-<os>`. Entry script inside each per-OS repo is `install.sh` (Unix) / `install.ps1` (Windows).
-- **Repo granularity.** Ten repos under `silo-agent`: eight per-OS (extant) + two coordination (to be created — `kniferoll-unpack` public, `kniferoll-managed-unpack` private). See §5b.
+- **Repo granularity.** Thirteen repos under `silo-agent` when complete: ten per-OS (eight extant + two WSL2 to-be-created), two coordination (to-be-created), one ancillary projector (to-be-created). See §5.1, §5b, §3.4.
+- **WSL2 promotion.** Its own pair of repos (`kniferoll-wsl2` + `kniferoll-managed-wsl2`); not folded into linux-deb. Justified by the resolv.conf lock dance, `/etc/wsl.conf` editing, distro filtering, time drift, the cross-boundary corp-CA story, and the WSL1 refusal. See §3.4.
+- **Projector disposition.** Split into `silo-agent/kniferoll-projector` (public, ancillary). Opt-in via each per-OS repo's `--projector` flag. Nothing from the projector ships in any per-OS default tool inventory; iterates on its own cadence.
 - **Coordination layer shape.** Bootstrap entry + shared library in one repo per posture. Per-OS repos consume via subtree (§5b.1).
 - **Shared-code mechanism.** Git subtree with `make sync-core`. Squashed merge commits, `lib/VERSION` for human-readable upstream tag, no submodules, no manual vendoring. (§5b.2)
 - **Posture isolation.** Strict one-way dependency: public never reads private, private subtrees public, never the reverse. CI grep-fails any `managed-unpack` reference in `kniferoll-unpack`. (§5b.3)
 - **Account shape.** Personal account today, possibly org later. Per-collaborator grants today; team grants on org conversion.
-- **TUI selector.** Per-OS in-script implementation; behavior matches the macOS contract documented in §6b. Not a separate repo, not a separate binary.
-- **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 9 wires it on.
+- **TUI selector.** Per-OS in-script implementation; behavior matches the macOS contract documented in §6b. WSL2 inherits the Linux-Debian implementation. Not a separate repo, not a separate binary.
+- **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
+- **Cooling-off period.** 7 days from upstream release before any version pin lands. CI-enforced. Emergency override via `--allow-fresh` with documented reason. (§6.2)
+- **Lean default inventory.** Every default tool earns its slot. The projector stack and other "nice-to-have" tools are opt-in flags or live in their own repos. (§6.2)
+- **Pedagogy norm.** Every non-trivial agent contribution produces a code deep dive in `docs/deep-dives/<feature>.md`. Documented in §11; canonical contract in `kniferoll-unpack/docs/PEDAGOGY.md`; per-repo agent instructions point at it.
 - **Project name.** `kniferoll`. The `terminal-` prefix is dead.
 - **Old `terminal-kniferoll` repo.** Keep on `main` as a frozen v1 reference. Tag the last v1 commit `v1-final`. Let it rest as documentation of what we used to do and why.
 - **Telemetry.** None, ever, in any posture. Recorded in `kniferoll-unpack/docs/ARCHITECTURE.md` as a non-negotiable.
@@ -714,27 +808,72 @@ Three remain. Everything else is resolved (see below) or scoped to a phase bound
 
 Sequenced by what unlocks the most learning fastest, not by OS.
 
-**Phase 0 — Pre-flight.** Eight per-OS repos exist; admin grants done; naming and repo strategy locked. Remaining: create the two coordination repos (`silo-agent/kniferoll-unpack` public, `silo-agent/kniferoll-managed-unpack` private), grant `albethere` admin on both. Confirm the three remaining open questions (§9: WSL2, projector disposition, inventory bumps). No installer code yet.
+**Phase 0 — Pre-flight.** Eight per-OS repos exist; admin grants done; naming and repo strategy locked. Remaining: create the five new repos (`kniferoll-wsl2`, `kniferoll-managed-wsl2`, `kniferoll-unpack`, `kniferoll-managed-unpack`, `kniferoll-projector`) per the §5.1 command block, grant `albethere` admin on each, apply discoverability topics. Resolve the one remaining open question (§9: inventory bumps) before phase 6. No installer code yet.
 
-**Phase 1 — Skeleton.** `kniferoll-unpack` gets its initial structure: stubbed `unpack` dispatcher, `lib/` skeleton (download-and-verify, log format, exit-code helpers, manifest writer, `SKELETON.md`), `docs/` with `ARCHITECTURE.md` + `FLAVOR.md` first drafts. Tag `kniferoll-unpack@v0.1.0`. Each of the four unmanaged per-OS repos commits its `install.sh` skeleton (header, preflight, mode flags, exit codes, log format — no install logic yet) and runs `make sync-core` to subtree the v0.1.0 lib. Goal: a user can clone any unmanaged per-OS repo, run `./install.sh --dry-run`, and see the skeleton produce empty output. The unpack dispatcher's OS detection works end-to-end for the unmanaged path.
+**Phase 1 — Skeleton.** `kniferoll-unpack` gets its initial structure: stubbed `unpack` dispatcher, `lib/` skeleton (download-and-verify, log format, exit-code helpers, manifest writer, `SKELETON.md`, `PEDAGOGY.md`), `docs/` with `ARCHITECTURE.md` + `FLAVOR.md` first drafts. Tag `kniferoll-unpack@v0.1.0`. Each of the five unmanaged per-OS repos (`kniferoll-mac`, `-windows`, `-linux-deb`, `-linux-arch`, `-wsl2`) commits its `install.sh` / `install.ps1` skeleton (header, preflight, mode flags, exit codes, log format — no install logic yet) and runs `make sync-core` to subtree the v0.1.0 lib. `kniferoll-projector` gets its own minimal scaffold: README pointing at its purpose as opt-in, an empty `install.sh` stub. Goal: a user can clone any unmanaged per-OS repo, run `./install.sh --dry-run`, and see the skeleton produce empty output. The unpack dispatcher's OS detection works end-to-end for the unmanaged path.
 
-**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force` + `--non-interactive`. The TUI selector ships in this phase as the reference contract for the other three (per §6b). Every later script is a diff against this. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0`.
+**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force` + `--non-interactive`. The TUI selector ships in this phase as the reference contract for the others (per §6b). The WSL2-detection-and-refuse preflight ships here too, suggesting `kniferoll-wsl2` to anyone who runs `kniferoll-linux-deb` inside WSL. Every later script is a diff against this. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0`.
 
 **Phase 3 — Same hand, new arch: `kniferoll-linux-arch`.** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-unpack/lib/` (and bumped on each consumer via `make sync-core`).
 
 **Phase 4 — Cross the threshold: `kniferoll-mac`.** Homebrew, different file paths (`~/.zshrc` vs `~/.zprofile` precedence, `/opt/homebrew` prefix, iTerm2 colorscheme deployment). The TUI ports to brewed-bash-4 with associative-array selection state and persistence (§6b). The lib proves itself across two OS families.
 
-**Phase 5 — Mind the proxy: `kniferoll-managed-unpack` + `kniferoll-managed-linux-deb`.** First managed-repo work. Stand up `kniferoll-managed-unpack`: stub `unpack` dispatcher with hard CA preflight, subtree `kniferoll-unpack/lib/` into `lib/`, seed `managed-lib/` (canonical: `ca_detection.sh`, `ca_propagation.sh`, `mdm_probes.sh`, `internal_repos.sh`). Bump `kniferoll-unpack/lib/` (e.g., to `v0.2.0`) if it needs new primitives for corp posture. Implement `kniferoll-managed-linux-deb`: corp-CA detection, CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), the corp policy file reader. No splash-page bypass — if encountered, exit 5 with an instruction to accept in browser. Goal: get the corp posture *exactly right* on one script before extending. The corp-CA propagation is the highest-stakes code in v2.
+**Phase 5 — Cross the boundary: `kniferoll-wsl2`.** WSL2-specific work: the resolv.conf lock dance (delete → write 1.1.1.1/8.8.8.8 → `chattr +i`), `/etc/wsl.conf` editing (`generateResolvConf=false`, `systemd=true`, `appendWindowsPath=false`, automount `metadata`), distro filtering (Debian/Ubuntu only; refuse other WSL distros and WSL1), `systemd-timesyncd` for clock drift, the `kniferoll-wsl2 dns --set ...` companion command for future DNS edits. The rest of the install logic is largely shared with `kniferoll-linux-deb` via the lib subtree — the WSL2 script's job is to layer the WSL specifics on top, not re-implement the Debian install.
 
-**Phase 6 — Fill the matrix: `kniferoll-managed-mac`, `kniferoll-managed-linux-arch`.** Port the corp-CA work from phase 5 into the other two managed Unix scripts. By now the pattern is set; these are diffs against phase 5 and their unmanaged twins.
+**Phase 6 — Mind the proxy: `kniferoll-managed-unpack` + `kniferoll-managed-linux-deb`.** First managed-repo work. Stand up `kniferoll-managed-unpack`: stub `unpack` dispatcher with hard CA preflight, subtree `kniferoll-unpack/lib/` into `lib/`, seed `managed-lib/` (canonical: `ca_detection.sh`, `ca_propagation.sh`, `mdm_probes.sh`, `internal_repos.sh`). Bump `kniferoll-unpack/lib/` (e.g., to `v0.2.0`) if new primitives are needed for corp posture. Implement `kniferoll-managed-linux-deb`: corp-CA detection, CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), the corp policy file reader. No splash-page bypass — exit 5 with browser remediation. Goal: get the corp posture *exactly right* on one script before extending. The corp-CA propagation is the highest-stakes code in v2.
 
-**Phase 7 — Other shore: `kniferoll-windows`, `kniferoll-managed-windows`.** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. The Windows TUI follows the §6b PowerShell-idiomatic recommendation (`Out-GridView` primary, `Read-Host` menu fallback). The longest phase, because PowerShell is foreign to most of the project's muscle memory.
+**Phase 7 — Fill the matrix: `kniferoll-managed-mac`, `kniferoll-managed-linux-arch`, `kniferoll-managed-wsl2`.** Port the corp-CA work from phase 6 into the other three managed Unix scripts. `kniferoll-managed-wsl2` adds the cross-boundary trust-store story: `$KR_CA_BUNDLE` resolution from `/mnt/c/...`, the documented PowerShell one-liner for exporting the corp CA from the Windows trust store, and the optional `--auto-export-ca` interop path (off by default). By now the pattern is set; these are diffs against phase 6 and their unmanaged twins.
 
-**Phase 8 — Ship v2.0.** Demo GIFs. README polish. CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every per-OS repo and on `kniferoll-unpack` / `kniferoll-managed-unpack`. `KR_INTERNAL_REPOS` ships *disabled* per §6.2; v2.0 works end-to-end against public sources on every posture. The frozen `albethere/terminal-kniferoll` repo gets a `README` pointer to the new family and a `v1-final` tag on its last commit.
+**Phase 8 — Other shore: `kniferoll-windows`, `kniferoll-managed-windows`.** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. The Windows TUI follows the §6b PowerShell-idiomatic recommendation (`Out-GridView` primary, `Read-Host` menu fallback). The longest phase, because PowerShell is foreign to most of the project's muscle memory.
 
-**Phase 9 (post-v2.0) — Internal-repos enablement.** Wire the off-by-default `KR_INTERNAL_REPOS` paths from phase 5 to a real corporate-mirror configuration. Test against staged internal mirrors. Tag managed scripts `v1.1.0` with the toggle ready for users who set the flag. The toggle stays per-user/per-host, never globally on by default.
+**Phase 9 — Ship v2.0.** Demo GIFs. README polish (per-repo READMEs and `kniferoll-unpack/README.md` as the de-facto home page). CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every per-OS repo, on `kniferoll-unpack` / `kniferoll-managed-unpack`, and on `kniferoll-projector` (independent cadence after this point). `KR_INTERNAL_REPOS` ships *disabled* per §6.2; v2.0 works end-to-end against public sources on every posture. The frozen `albethere/terminal-kniferoll` repo gets a `README` pointer to the new family and a `v1-final` tag on its last commit.
 
-Phasing front-loads the highest-risk work (corp-CA in phase 5) only *after* the unmanaged shape is locked in three platforms. The corp design has three working examples to defend against, and the corp work is not allowed to leak back into the unmanaged path. That separation is the rewrite's central structural bet, and the phasing is built to enforce it.
+**Phase 10 (post-v2.0) — Internal-repos enablement.** Wire the off-by-default `KR_INTERNAL_REPOS` paths from phase 6 to a real corporate-mirror configuration. Test against staged internal mirrors. Tag managed scripts `v1.1.0` with the toggle ready for users who set the flag. The toggle stays per-user/per-host, never globally on by default.
+
+Phasing front-loads the highest-risk work (corp-CA in phase 6) only *after* the unmanaged shape is locked in four platforms (deb, arch, mac, wsl2). The corp design has four working examples to defend against, and the corp work is not allowed to leak back into the unmanaged path. That separation is the rewrite's central structural bet, and the phasing is built to enforce it.
+
+---
+
+## 11. Pedagogy: code deep dives for the human operator
+
+This rewrite is also a learning vehicle. Chef is moving from SOC operator into AI-driven detection engineering — a role where the work is increasingly mediated by agents but the human still has to *understand* the code well enough to debug, extend, and trust it. Code that an agent shipped without explanation is code that becomes opaque the next time it breaks at 11pm. Detection engineering at scale will increasingly mean reading code that an agent wrote at 3am and acting on it at 9am; the half-life of "I'll just ask the agent again" is short, the half-life of "I read the deep dive once and now I understand this module" is long.
+
+The norm: every agent contribution to a kniferoll repo produces a *code deep dive* alongside. Deep dives are a separate artifact from PR descriptions and from inline comments. They live in `docs/deep-dives/<feature>.md` inside the repo where the change lands.
+
+### 11.1 What a deep dive is for
+
+PR descriptions answer "what changed and why this PR exists." Inline comments answer "what was non-obvious about this single line or block." Deep dives answer the question between those two: *if you opened this module fresh next year, what would you need to know to read it confidently and modify it without breaking everything?*
+
+The audience is the human operator (Chef primarily; future contributors secondarily). The audience is not the agent that wrote the code — agents will read the actual code. The deep dive exists so the human stays in the loop *and* builds standing knowledge.
+
+### 11.2 What a deep dive contains
+
+Six sections, in order:
+
+1. **What this code does (high-level).** One paragraph. Pretend the reader has never seen the file. Name the inputs, outputs, side effects. No jargon without footnoting.
+2. **Why it's structured this way (design rationale).** Two to four paragraphs. Why this function vs that one, why this data structure, why this control flow. Where alternatives were considered, mention them and why they lost.
+3. **Walkthrough.** Line-by-line or block-by-block, in the order the reader would encounter them. Quote the actual code in fenced blocks. Annotate every decision a reader might pause on. This is the long part.
+4. **Extension points.** "If you wanted to add support for X, you would change Y and Z." One paragraph per likely future change.
+5. **Pitfalls.** "If you change X without also changing Y, you'll silently break Z." Concrete failure modes, observed-or-predicted.
+6. **References.** External standards, RFCs, upstream docs that govern the behavior. Linked, not paraphrased.
+
+### 11.3 Cadence
+
+- **Required:** any PR that adds a new module, changes a public API, or touches the AWK / regex / parsing surfaces.
+- **Strongly encouraged:** any PR that fixes a non-trivial bug. The deep dive captures *why* the bug existed, which is itself a learning artifact.
+- **Optional:** typo fixes, dependency bumps without behavior change, formatting-only PRs.
+
+A deep dive does not gate a PR's merge. CI checks for its presence on required PRs and posts an informational comment if missing; the maintainer decides whether to block on it. The norm is shaped by example, not by tooling.
+
+### 11.4 Where this lives in the agent instructions
+
+Each repo's `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, and `.github/copilot-instructions.md` includes a directive: *"When you write or modify non-trivial code in this repo, also write a `docs/deep-dives/<feature>.md` per the contract in `kniferoll-unpack/docs/PEDAGOGY.md`."* The contract is canonical in `kniferoll-unpack/docs/PEDAGOGY.md` (subtreed into every consumer's `lib/`-adjacent docs); per-repo agent instructions point at it rather than restating it.
+
+### 11.5 Why this matters here specifically
+
+Chef's move from SOC into AI-driven detection engineering is the proximate reason. The deeper reason is that any project where agents do most of the typing and a human does most of the deciding needs a feedback channel that's slower than chat and faster than re-reading the source. Deep dives are that channel. They're written for the human, by the agent, at the moment the code is freshest in the agent's context — and they accumulate as a corpus the human can read in any order, at any time, to keep their model of the system current.
+
+Building deep dives into the project rhythm from day one is cheaper than retrofitting them later, when the modules already exist and nobody remembers the context. v1's `docs/` was a handful of short manifestos that aged well; v2's `docs/deep-dives/` should be a much larger collection that ages just as well because it's tied directly to code-as-shipped, with the kind of detail that survives staffing changes, hardware changes, and the inevitable "what was I thinking when I wrote this?" moment six months out.
 
 ---
 
@@ -742,7 +881,8 @@ Phasing front-loads the highest-risk work (corp-CA in phase 5) only *after* the 
 
 Plan-level verification before any code is written:
 
-- Resolve the three remaining open questions in §9 (WSL2, TUI/projector split-off, inventory bumps).
+- Resolve the one remaining open question in §9 (inventory bumps).
+- Run the §5.1 command block to create the five new repos and grant `albethere` admin.
 
 Code-level verification per phase:
 
