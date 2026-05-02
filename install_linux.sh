@@ -54,7 +54,23 @@ quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
 FAILED_TOOLS=()
 
 # shellcheck disable=SC2329  # invoked indirectly via ERR trap below
-on_error() { warn "Unexpected failure at line $1: $2"; }
+# Suppress benign non-zero exits we already handle structurally so the trap
+# stays a useful diagnostic instead of crying wolf on every presence check.
+on_error() {
+    local cmd="$2"
+    case "$cmd" in
+        # while-test patterns (sudo keepalive, polling)
+        "sudo -n true"*)            return 0 ;;
+        # presence checks — non-zero is the "not found" answer, not a failure
+        "is_installed "*)           return 0 ;;
+        "command -v "*)             return 0 ;;
+        "dpkg -s "*|"dpkg-query "*|"dpkg -l "*) return 0 ;;
+        "brew list "*)              return 0 ;;
+        # grep -q used to scan for matches — non-match is normal
+        grep*-q*|grep*-Eq*|grep*-Fq*) return 0 ;;
+    esac
+    warn "Unexpected failure at line $1: $cmd"
+}
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
 
 # ── Helper: run with soft failure ────────────────────────────────────────────
@@ -433,16 +449,64 @@ setup_zscaler_trust() {
     quip "curl, git, npm, yarn, pip, aws cli will all trust this bundle in this session"
 }
 
-# ── Helper: apt single-package install (skip if present) ─────────────────────
+# ── Helper: wait for dpkg/apt lock to clear ──────────────────────────────────
+# unattended-upgrades on Pop!_OS / Ubuntu can hold the dpkg lock for 10+ min
+# after first boot. Surface that we're waiting (apt-get's own
+# DPkg::Lock::Timeout is silent) so the user can tell waiting-on-lock from
+# truly-hung. Returns 1 if the lock is still held after `timeout` seconds.
+_apt_wait_lock() {
+    local timeout="${1:-300}" elapsed=0
+    while sudo fuser /var/lib/dpkg/lock-frontend &>/dev/null \
+       || sudo fuser /var/lib/dpkg/lock         &>/dev/null \
+       || sudo fuser /var/lib/apt/lists/lock    &>/dev/null; do
+        if (( elapsed == 0 )); then
+            warn "apt/dpkg lock held (likely unattended-upgrades) — waiting up to ${timeout}s..."
+        fi
+        if (( elapsed >= timeout )); then
+            err "apt lock still held after ${timeout}s — try: sudo systemctl stop unattended-upgrades"
+            return 1
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 0
+}
+
+# ── Helper: verify packages reached the `ii` (installed) state ───────────────
+# Authoritative post-install check. apt-get's exit code is informational
+# because the grep-pipeline pattern can mis-classify (clean install with
+# nothing-to-do exits 0 with no "Setting up" output → grep returns 1).
+_apt_verify_installed() {
+    local missing=() p
+    for p in "$@"; do
+        if ! dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null \
+                | grep -q '^ii'; then
+            missing+=("$p")
+        fi
+    done
+    if (( ${#missing[@]} )); then
+        err "post-install verification: not in 'ii' state → ${missing[*]}"
+        FAILED_TOOLS+=("${missing[@]}")
+        return 1
+    fi
+    return 0
+}
+
+# ── Helper: apt single-package install (skip if present, verify after) ───────
 apt_install() {
     local check_bin="$1" pkg="$2" desc="${3:-$2}"
-    if is_installed "$check_bin"; then skip "$desc already installed"; return 0; fi
+    if is_installed "$check_bin" \
+       || dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii'; then
+        skip "$desc already installed"; return 0
+    fi
+    _apt_wait_lock 300 || { FAILED_TOOLS+=("$pkg"); return 1; }
     info "Installing $desc..."
-    if sudo apt-get install -y --fix-missing -q "$pkg" 2>&1 | tail -3; then
+    sudo apt-get -o DPkg::Lock::Timeout=300 install -y --fix-missing -q "$pkg" \
+        >>"$LOG_FILE" 2>&1 || true
+    if _apt_verify_installed "$pkg"; then
         ok "$desc installed"
     else
-        warn "$desc install failed — logged"
-        FAILED_TOOLS+=("$pkg")
+        warn "$desc install failed — see $LOG_FILE"
     fi
 }
 
@@ -453,7 +517,8 @@ apt_batch() {
     banner "$section"
     for entry in "$@"; do
         local bin="${entry%%:*}" pkg="${entry##*:}"
-        if is_installed "$bin" || dpkg -s "$pkg" &>/dev/null 2>&1; then
+        if is_installed "$bin" \
+           || dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii'; then
             skip "$pkg"
         else
             to_install+=("$pkg")
@@ -462,22 +527,25 @@ apt_batch() {
     if [[ ${#to_install[@]} -eq 0 ]]; then
         quip "Nothing new here — pantry stocked."; return 0
     fi
+    _apt_wait_lock 300 || { FAILED_TOOLS+=("${to_install[@]}"); return 1; }
     info "Installing: ${to_install[*]}"
+    local rc=0
     if [[ "$ST_ENABLED" == "true" && -n "$ST_VERBOSE_LOG" ]]; then
-        if sudo apt-get install -y --fix-missing "${to_install[@]}" \
-                2>&1 | tee -a "$ST_VERBOSE_LOG" | \
-                grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
-            ok "$section — complete"
-        else
-            warn "Partial failure in $section — check log"
-            for pkg in "${to_install[@]}"; do FAILED_TOOLS+=("$pkg"); done
-        fi
-    elif sudo apt-get install -y --fix-missing -q "${to_install[@]}" 2>&1 | \
-        grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
-        ok "$section — complete"
+        sudo apt-get -o DPkg::Lock::Timeout=300 install -y --fix-missing \
+            "${to_install[@]}" 2>&1 | tee -a "$ST_VERBOSE_LOG" >>"$LOG_FILE" \
+            || rc=$?
     else
-        warn "Partial failure in $section — check log"
-        for pkg in "${to_install[@]}"; do FAILED_TOOLS+=("$pkg"); done
+        sudo apt-get -o DPkg::Lock::Timeout=300 install -y --fix-missing -q \
+            "${to_install[@]}" >>"$LOG_FILE" 2>&1 || rc=$?
+    fi
+    if (( rc != 0 )); then
+        warn "$section — apt-get exited ${rc}; verifying which packages landed..."
+    fi
+    # dpkg-query is authoritative — apt's exit code is informational only.
+    if _apt_verify_installed "${to_install[@]}"; then
+        ok "$section — all ${#to_install[@]} package(s) verified ii"
+    else
+        warn "$section — partial install (see FAILED_TOOLS in summary)"
     fi
 }
 
@@ -488,21 +556,18 @@ apt_batch() {
 # so non-root users on this machine cannot capture raw packets via dumpcap.
 # This is a security choice, not a hang-prevention.
 _nmap_safe_install() {
-    if is_installed "nmap" || dpkg -s nmap &>/dev/null 2>&1; then
+    if is_installed "nmap" \
+       || dpkg-query -W -f='${db:Status-Abbrev}' nmap 2>/dev/null | grep -q '^ii'; then
         skip "nmap already installed"; return 0
     fi
     info "Pre-seeding wireshark-common/install-setuid=false (security choice)..."
     echo 'wireshark-common wireshark-common/install-setuid boolean false' | \
         sudo debconf-set-selections 2>/dev/null || true
+    _apt_wait_lock 300 || { FAILED_TOOLS+=("nmap"); return 1; }
     info "Installing nmap (timeout 120s, no recommended extras)..."
-    if timeout 120 sudo apt-get install -y --fix-missing -q \
-            --no-install-recommends nmap 2>&1 | \
-            grep -E '(Setting up|already installed|[Ee]rror|E:)'; then
-        ok "nmap installed"
-    else
-        warn "nmap install failed or timed out — logged"
-        FAILED_TOOLS+=("nmap")
-    fi
+    timeout 120 sudo apt-get -o DPkg::Lock::Timeout=300 install -y \
+        --fix-missing -q --no-install-recommends nmap >>"$LOG_FILE" 2>&1 || true
+    _apt_verify_installed nmap && ok "nmap installed"
 }
 
 # ── Helper: cargo install (skip if present) ──────────────────────────────────
@@ -844,6 +909,30 @@ _brew_outdated_report() {
     fi
 }
 
+# ── Helper: brew install with post-install verification ──────────────────────
+# `brew install` can return 0 on partial failure (network glitches mid-fetch,
+# postinstall script failures, etc.). Verify the formula actually appears in
+# `brew list` before declaring success.
+_brew_install_verified() {
+    local formula="$1"
+    if brew list --formula -1 2>/dev/null | grep -qx "$formula"; then
+        skip "$formula already installed (brew)"
+        return 0
+    fi
+    info "Installing $formula via Homebrew..."
+    if brew install "$formula" >>"$LOG_FILE" 2>&1; then
+        if brew list --formula -1 2>/dev/null | grep -qx "$formula"; then
+            ok "$formula installed (verified in brew list)"
+            return 0
+        fi
+        warn "$formula: brew exited 0 but formula not in \`brew list\`"
+    else
+        warn "$formula: brew install failed — see $LOG_FILE"
+    fi
+    FAILED_TOOLS+=("${formula}(brew)")
+    return 1
+}
+
 # ── Feature: Homebrew + Gemini CLI ───────────────────────────────────────────
 install_homebrew_and_gemini() {
     local brew_bin=""
@@ -876,9 +965,9 @@ install_homebrew_and_gemini() {
         # Replaces older bare eval "$(brew shellenv)" lines from previous installs.
         sweep_brew_shellenv_files "" _brew_shellenv_block_linux
         _brew_update_if_stale
-        is_installed "gcc" || run_optional "Installing gcc via Homebrew" brew install gcc
+        is_installed "gcc" || _brew_install_verified gcc
         if ! is_installed "gemini"; then
-            run_optional "Installing Gemini CLI (Homebrew)" brew install gemini-cli
+            _brew_install_verified gemini-cli || true
             ! is_installed "gemini" && is_installed "npm" && \
                 run_optional "Installing Gemini CLI (npm fallback)" \
                     npm install -g @google/gemini-cli || true
@@ -1937,7 +2026,42 @@ if is_installed "brew" || [[ -x /home/linuxbrew/.linuxbrew/bin/brew ]] || \
     sweep_brew_shellenv_files "" _brew_shellenv_block_linux
 fi
 
-trap - ERR  # all failures captured in FAILED_TOOLS — no more ERR trap needed
+# ── POST-FLIGHT VERIFICATION ─────────────────────────────────────────────────
+# Diagnostic, not gating — per-step verification owns FAILED_TOOLS already.
+# This pass surfaces broken state across the whole system so the user knows.
+_postflight_verify() {
+    banner "POST-FLIGHT VERIFICATION"
+    if [[ "$PKG_MGR" == "apt" ]]; then
+        local audit_out check_out
+        audit_out="$(dpkg --audit 2>&1 | head -20 || true)"
+        if [[ -n "$audit_out" ]]; then
+            warn "dpkg --audit reports half-configured packages:"
+            echo "$audit_out" | sed 's/^/    /'
+        else
+            ok "dpkg --audit: no half-configured packages"
+        fi
+        check_out="$(sudo apt-get -o DPkg::Lock::Timeout=60 check 2>&1 | tail -5 || true)"
+        if echo "$check_out" | grep -qE 'broken|Unmet|E:'; then
+            warn "apt-get check found broken dependencies:"
+            echo "$check_out" | sed 's/^/    /'
+        else
+            ok "apt-get check: no broken dependencies"
+        fi
+    fi
+    if is_installed "brew"; then
+        local missing_out
+        missing_out="$(brew missing 2>&1 | head -10 || true)"
+        if [[ -n "$missing_out" ]]; then
+            warn "brew missing reports gaps:"
+            echo "$missing_out" | sed 's/^/    /'
+        else
+            ok "brew missing: no missing dependencies"
+        fi
+    fi
+}
+
+trap - ERR  # per-step verification owns FAILED_TOOLS — no more ERR trap needed
+_postflight_verify
 st_cleanup  # tear down split-terminal UI before printing summary (tk-022)
 sc_process_deferred
 print_summary
