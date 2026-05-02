@@ -795,6 +795,44 @@ https://downloads.1password.com/linux/debian/${arch} stable main" | \
         bash -c "$SUDO chown -R '$USER':'$USER' '$HOME/.1password'"
 }
 
+# ── Helper: brew update only if cache is stale (>24h) ────────────────────────
+# `brew update` on a stale install can take 5+ minutes with no output. Skip
+# when the homebrew-core tap was fetched within the last 24h, otherwise stream
+# brew's own progress lines so the user can tell running from hung.
+_brew_update_if_stale() {
+    local repo
+    repo="$(brew --repository 2>/dev/null)" || return 0
+    local fetch_head="$repo/.git/FETCH_HEAD"
+    local age_hours=999
+    if [[ -f "$fetch_head" ]]; then
+        local mtime now
+        # `stat -c` is GNU; macOS uses `stat -f` but this is the Linux installer.
+        mtime="$(stat -c %Y "$fetch_head" 2>/dev/null || echo 0)"
+        now="$(date +%s)"
+        age_hours=$(( (now - mtime) / 3600 ))
+    fi
+    if (( age_hours < 24 )); then
+        skip "Homebrew update — tap fetched ${age_hours}h ago (< 24h, skipping)"
+        return 0
+    fi
+    info "Updating Homebrew (last fetch ${age_hours}h ago — can take several minutes)..."
+    if brew update 2>&1 | tee -a "$LOG_FILE"; then
+        ok "Homebrew updated"
+    else
+        warn "brew update returned non-zero — continuing"
+    fi
+}
+
+# ── Helper: surface brew outdated count without auto-upgrading ───────────────
+_brew_outdated_report() {
+    local count
+    count="$(brew outdated --quiet 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
+        warn "Homebrew: ${count} formula(e) outdated — run \`brew upgrade\` if you want them updated"
+        warn "         (this installer does not auto-upgrade existing formulae)"
+    fi
+}
+
 # ── Feature: Homebrew + Gemini CLI ───────────────────────────────────────────
 install_homebrew_and_gemini() {
     local brew_bin=""
@@ -826,7 +864,7 @@ install_homebrew_and_gemini() {
         # Upsert brew shellenv block into rc files using the marker-based sweep.
         # Replaces older bare eval "$(brew shellenv)" lines from previous installs.
         sweep_brew_shellenv_files "" _brew_shellenv_block_linux
-        run_optional "Updating Homebrew" brew update
+        _brew_update_if_stale
         is_installed "gcc" || run_optional "Installing gcc via Homebrew" brew install gcc
         if ! is_installed "gemini"; then
             run_optional "Installing Gemini CLI (Homebrew)" brew install gemini-cli
@@ -836,6 +874,7 @@ install_homebrew_and_gemini() {
         else
             skip "Gemini CLI already installed"
         fi
+        _brew_outdated_report
     else
         warn "Homebrew unavailable — skipping Homebrew-based installs"
     fi
