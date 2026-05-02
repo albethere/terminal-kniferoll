@@ -126,16 +126,16 @@ The rewrite addresses all eight of these points by collapsing the matrix, separa
 
 Eight scripts. Four operating-system targets crossed with two security postures. No further axes — architecture (x86_64 / aarch64) is handled inside the Linux scripts as a matrix dimension, not a separate file, because the divergence is small and the duplication would buy nothing.
 
-| OS target | Posture | Filename | Notes |
-|-----------|---------|----------|-------|
-| macOS (Apple Silicon, arm64) | unmanaged | `kniferoll-mac.sh` | Homebrew on arm64; assumes user is admin of their machine. |
-| macOS (Apple Silicon, arm64) | managed | `kniferoll-managed-mac.sh` | Adds Zscaler/corp-CA detection, MDM-aware preflight, TLS-1.2 fallback. |
-| Windows 10/11 (x86_64) | unmanaged | `kniferoll-windows.ps1` | PowerShell 7+, winget primary, Scoop secondary. |
-| Windows 10/11 (x86_64) | managed | `kniferoll-managed-windows.ps1` | Adds corp-CA cert-store enumeration, `CARGO_HTTP_CAINFO`, group-policy-aware paths. |
-| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `kniferoll-linux-deb.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. |
-| Linux Debian/Ubuntu (x86_64 + aarch64) | managed | `kniferoll-managed-linux-deb.sh` | Adds Zscaler/corp-CA paths under `/usr/local/share/ca-certificates/`, internal apt mirrors as a flag. |
-| Linux Arch-family (x86_64 + aarch64) | unmanaged | `kniferoll-linux-arch.sh` | pacman + AUR helper detection; CachyOS, EndeavourOS, Manjaro all welcome. |
-| Linux Arch-family (x86_64 + aarch64) | managed | `kniferoll-managed-linux-arch.sh` | Same as above plus corp posture. Edge case: rolling release means version pins are looser; documented. |
+| OS target | Posture | Repo | Entry | Notes |
+|-----------|---------|------|-------|-------|
+| macOS (Apple Silicon, arm64) | unmanaged | `silo-agent/kniferoll-mac` | `install.sh` | Homebrew on arm64; assumes user is admin of their machine. |
+| macOS (Apple Silicon, arm64) | managed | `silo-agent/kniferoll-managed-mac` | `install.sh` | Adds Zscaler/corp-CA detection, MDM-aware preflight, TLS-1.2 fallback. |
+| Windows 10/11 (x86_64) | unmanaged | `silo-agent/kniferoll-windows` | `install.ps1` | PowerShell 7+, winget primary, Scoop secondary. |
+| Windows 10/11 (x86_64) | managed | `silo-agent/kniferoll-managed-windows` | `install.ps1` | Adds corp-CA cert-store enumeration, `CARGO_HTTP_CAINFO`, group-policy-aware paths. |
+| Linux Debian/Ubuntu (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-deb` | `install.sh` | apt + cargo + selective GitHub releases; arch-aware in the inventory. Hosts the canonical `lib/`. |
+| Linux Debian/Ubuntu (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-deb` | `install.sh` | Adds Zscaler/corp-CA paths under `/usr/local/share/ca-certificates/`, internal-mirror toggle (off by default). |
+| Linux Arch-family (x86_64 + aarch64) | unmanaged | `silo-agent/kniferoll-linux-arch` | `install.sh` | pacman + AUR helper detection; CachyOS, EndeavourOS, Manjaro all welcome. |
+| Linux Arch-family (x86_64 + aarch64) | managed | `silo-agent/kniferoll-managed-linux-arch` | `install.sh` | Same as above plus corp posture. Edge case: rolling release means version pins are looser; documented. |
 
 ### 3.1 Why Intel macOS is out of scope
 
@@ -147,155 +147,89 @@ x86_64 and aarch64 differ on Linux in three ways relevant to kniferoll: (a) some
 
 ### 3.3 What the matrix excludes and why
 
-- **WSL2** is folded into `kniferoll-linux-deb.sh` (and `kniferoll-managed-linux-deb.sh` if used in a corp environment) with a small `if-wsl` block that adjusts a few paths. WSL2 is Debian/Ubuntu running on a Microsoft hypervisor. It is not its own platform. (Open question: confirm with Chef.)
+- **WSL2** is folded into `silo-agent/kniferoll-linux-deb` (and `silo-agent/kniferoll-managed-linux-deb` if used in a corp environment) with a small `if-wsl` block that adjusts a few paths. WSL2 is Debian/Ubuntu running on a Microsoft hypervisor. It is not its own platform. (Open question: confirm with Chef.)
 - **NixOS / nix-darwin** is excluded — Nix users have a different system model and a vastly more capable installer (Home Manager). v2 should not pretend to compete in that space.
 - **FreeBSD / OpenBSD / Alpine / Fedora-RHEL family** are excluded as targets. They each have small but meaningful differences (different libc on Alpine, dnf on Fedora, ports on FreeBSD) that would each require a dedicated script. The four targets above cover ~95% of the kniferoll user base; the rest are documented as "you are welcome to fork."
 
 ---
 
-## 4. Naming
+## 4. Naming convention
 
-### 4.1 Decision: flat, descriptive, no codename layer
-
-The eight scripts are named for what they are, not for what they evoke. Each name is `kniferoll-<os-family>` for the unmanaged posture, or `kniferoll-managed-<os-family>` for the managed posture. The filename is the documentation; there is no separate codename a user has to learn.
-
-| Posture | OS family | Script |
-|---------|-----------|--------|
-| unmanaged | macOS Apple Silicon | `kniferoll-mac.sh` |
-| unmanaged | Windows | `kniferoll-windows.ps1` |
-| unmanaged | Linux Debian/Ubuntu (x86_64 + aarch64) | `kniferoll-linux-deb.sh` |
-| unmanaged | Linux Arch-family (x86_64 + aarch64) | `kniferoll-linux-arch.sh` |
-| managed | macOS Apple Silicon | `kniferoll-managed-mac.sh` |
-| managed | Windows | `kniferoll-managed-windows.ps1` |
-| managed | Linux Debian/Ubuntu (x86_64 + aarch64) | `kniferoll-managed-linux-deb.sh` |
-| managed | Linux Arch-family (x86_64 + aarch64) | `kniferoll-managed-linux-arch.sh` |
-
-### 4.2 Why flat instead of themed
-
-A codename family (Knife Motions: glide-cut, paper-slice, broad-stroke, clean-pass, draw-line, fine-dice, push-cut, slow-pull) was considered and rejected. Codenames have one advantage — memorable shorthand in conversation — and several costs: a user has to learn the mapping; SEO suffers ("which one is fine-dice?"); the names age poorly if the metaphor stops fitting; and they introduce a layer of indirection the auditable surface doesn't need. Flat names invert all four: zero learning cost, perfect SEO, no metaphor to maintain, and the filename answers "what does this script do" by itself.
-
-The kitchen voice from `docs/FLAVOR.md` survives entirely in installer output, in error messages, in documentation. The scripts can call themselves `kniferoll-mac` and still print `"Slicing through dependencies..."` when they're working. Naming and voice are separate concerns; flattening one doesn't dilute the other.
-
-### 4.3 Filename convention
-
-Each Unix script ends in `.sh`; the Windows scripts end in `.ps1`. The pattern is `kniferoll[-managed]-<os-family>.<ext>`. `mac` is unambiguous — Apple Silicon is the only supported Mac arch. `linux-deb` covers Debian, Ubuntu, and their derivatives; `linux-arch` covers Arch, EndeavourOS, Manjaro, CachyOS. `windows` is x86_64 only. Architecture (x86_64 vs aarch64) is handled inside the Linux scripts as a runtime branch, not as a separate file.
+Each repo is `silo-agent/kniferoll-<os>` (unmanaged) or `silo-agent/kniferoll-managed-<os>` (managed); inside every repo the entry script is `install.sh` (Unix) or `install.ps1` (Windows). The repo name carries the OS and posture, so the script name doesn't need to repeat them. Descriptive names beat themed ones for an installer: filenames are URL-legible, grep-able, and free of the insider-knowledge tax that codenames impose on new contributors. Kitchen-voice character belongs in `docs/FLAVOR.md` and the installer's runtime output, not in eight individual aliases. `mac` resolves to Apple Silicon (the only supported macOS arch); `linux-deb` covers Debian/Ubuntu and derivatives across x86_64 and aarch64; `linux-arch` covers Arch, EndeavourOS, Manjaro, CachyOS across the same two arches; `windows` is x86_64 only.
 
 ---
 
 ## 5. Repo strategy
 
-### 5.1 Recommendation: eight repos under `silo-agent`
+### 5.1 Layout (extant)
 
-The naming flattening makes a corresponding repo flattening natural. Each script lives in its own repo under the `silo-agent` GitHub account. There is no separate library repo: the shared `lib/` lives inside `kniferoll-linux-deb` (the reference implementation) and is vendored into the other seven repos at a specific tag. Visibility splits cleanly along the posture seam: the four unmanaged repos are public; the four managed repos are private.
+The eight repos exist under `silo-agent`. `albethere` has admin on all of them.
 
-**Public repos (4):**
+| Visibility | Repo | Posture |
+|------------|------|---------|
+| Public | `silo-agent/kniferoll-mac` | unmanaged |
+| Public | `silo-agent/kniferoll-windows` | unmanaged |
+| Public | `silo-agent/kniferoll-linux-deb` | unmanaged (also hosts the canonical `lib/`) |
+| Public | `silo-agent/kniferoll-linux-arch` | unmanaged |
+| Private | `silo-agent/kniferoll-managed-mac` | managed |
+| Private | `silo-agent/kniferoll-managed-windows` | managed |
+| Private | `silo-agent/kniferoll-managed-linux-deb` | managed |
+| Private | `silo-agent/kniferoll-managed-linux-arch` | managed |
 
-- `silo-agent/kniferoll-mac`
-- `silo-agent/kniferoll-windows`
-- `silo-agent/kniferoll-linux-deb` — also hosts the shared `lib/`: download-and-verify, RC-block sweep, log format, exit-code helpers, manifest writer. Each tagged release (`v0.1.0`, `v1.0.0`, …) is simultaneously "the script at version X" and "the lib at version X." The other seven repos vendor `lib/` from a specific `kniferoll-linux-deb` tag.
-- `silo-agent/kniferoll-linux-arch`
+Inside each repo the entry script is `install.sh` (Unix repos) or `install.ps1` (Windows repos). The repo name disambiguates the OS and posture; the entry script doesn't need to repeat that information. A user runs:
 
-**Private repos (4):**
+```
+git clone https://github.com/silo-agent/kniferoll-mac.git
+cd kniferoll-mac
+./install.sh
+```
 
-- `silo-agent/kniferoll-managed-mac`
-- `silo-agent/kniferoll-managed-windows`
-- `silo-agent/kniferoll-managed-linux-deb`
-- `silo-agent/kniferoll-managed-linux-arch`
+`silo-agent` is a personal GitHub account today, with potential to convert to an org later. The access grants on each repo were issued in the per-collaborator form, which keeps working unchanged after a personal-to-org conversion. If/when conversion happens, an `admins` team grant becomes the more ergonomic shape; that's a one-time migration and is not blocking.
 
-**Account shape.** `silo-agent` is currently a personal GitHub account, with potential to become an organization later. The plan keeps options open: the access-grant commands in §5.5 use the per-collaborator form, which works against both personal accounts and orgs. If/when `silo-agent` converts to an org, swap to the team-based form for less per-repo bookkeeping.
+### 5.2 Public/private split
 
-**Admin grants:** the `albethere` account (email `hello@silocrate.com`) gets full admin on every one of the eight repos. This is a permission-modification action and falls outside what kniferoll's design tooling will issue automatically — see §5.5 for the exact `gh` commands you (Chef) need to run after the repos are created.
+The split runs along the posture seam, not the OS axis. Unmanaged repos are public because they are the front door — anyone running an installer on a personal machine should be able to read every line that's about to touch their dotfiles. Managed repos are private because they accumulate corporate-shaped knowledge — internal mirror URLs, MDM detection probes, the path layout of a particular org's trust store, the CA-bundle locations a particular IT department deploys — none of which belongs on the open internet.
 
-### 5.2 Defense of the per-script split
+The boundary rules below keep the public surface clean.
 
-A single monorepo can't hold this matrix cleanly because the public/private seam is too important to leave porous: managed scripts contain corporate hostnames, internal mirrors, MDM probes, and the *shape* of a corporate trust store, none of which belongs on the open internet. A two-repo split (one public catch-all, one private catch-all) was an earlier proposal; it works, but a per-script split has three concrete advantages worth the additional scaffolding cost:
-
-1. **Independent versioning.** `kniferoll-mac@1.4.2` and `kniferoll-linux-deb@1.7.0` evolve at their own cadences. A bug in one OS's package layer doesn't pin the others to wait for a coordinated release.
-2. **Granular access.** A specific contractor needs Linux-Debian access only? Grant it on one repo. No "everyone gets everything" pressure on shared resources.
-3. **No accidental leakage.** Managed repos are physically separated from unmanaged. No shared CI yaml, no shared README, no risk of a corp hostname slipping into a public-facing file because someone forgot which directory they were editing in.
-
-The cost is real and worth flagging: 8× the README scaffolding, 8× the CI workflow, and a release-coordination overhead that the two-repo split avoided. The shared `lib/` inside `kniferoll-linux-deb` absorbs most of the duplication at the code level — it becomes a versioned dependency rather than copy-pasted scaffolding — but each script repo still owns its own platform-specific concerns, its own tests, its own docs. The trade is intentional: more scaffolding, much cleaner audit boundaries.
-
-### 5.3 Boundary rules
-
-Public repos never reference:
+**Public repos never reference:**
 - corporate hostnames, IPs, or DNS suffixes
 - specific corp-CA filenames or paths
 - MDM-detection commands or expectations
 - internal apt mirrors, Artifactory hosts, or internal package registries
 - the words "Zscaler," "ZIA," "ZPA," or any specific proxy vendor
 
-Public repos may reference, generically:
+**Public repos may reference, generically:**
 - "If you are behind a corporate TLS-inspecting proxy, see the matching `kniferoll-managed-*` repo (private)."
-- The standard env vars (`CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, etc.) — these are documented features of the upstream tools, not corporate secrets.
+- Standard env vars (`CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, etc.) — these are documented features of upstream tools, not corporate secrets.
 
-The `lib/` inside `kniferoll-linux-deb` is public and posture-agnostic: no function in it may take a corporate-shaped argument, depend on the existence of a corp environment variable, or hardcode a path under `/usr/local/share/ca-certificates/`. The library provides neutral primitives (download-and-verify, write-rc-block, check-tool-installed, log-with-format, write-manifest) that the managed scripts compose with their corporate logic in their own repos.
+The `lib/` inside `kniferoll-linux-deb` (see §5.3) is public and posture-agnostic. No function in it may take a corporate-shaped argument, depend on a corp environment variable, or hardcode a path under `/usr/local/share/ca-certificates/`. The lib provides neutral primitives that managed scripts compose with their corporate logic in the managed repos.
 
-### 5.4 Discoverability and shared code reuse
+### 5.3 Shared code reuse — vendored from `kniferoll-linux-deb`
 
-Per-script repos lose the single-front-door discoverability of one umbrella repo. Mitigations:
+The shared library lives at `kniferoll-linux-deb/lib/`. It contains posture-agnostic primitives: download-and-verify, the RC-block AWK state machine (modernized from v1's `scripts/lib/sweep-zscaler.awk`), log format, exit-code helpers, manifest writer, backup rotation, the per-script skeleton contract (`SKELETON.md`). Each tagged release of `kniferoll-linux-deb` is simultaneously the script at version X and the lib at version X.
 
-- A pinned topic on every public repo (`topic:kniferoll`) so GitHub's tag search returns the family.
-- Consistent naming (`kniferoll-*`) so a `gh search repos kniferoll` answers "what's the family" in one query.
-- Each public repo's README includes a "Family" section linking to the three other public repos.
-- The `kniferoll-linux-deb` README is the de facto project home page (since it carries the shared lib): it explains the architecture, links to all four public scripts, and points at the private overlays as "consult your corporate IT for access if applicable."
+The other seven repos consume the lib by **vendoring**: each repo commits a `lib/` directory (a snapshot of `kniferoll-linux-deb/lib/` at a specific tag) plus a `lib/.vendor` file that records `kniferoll-linux-deb@<tag>` and the SHA256 of the vendored tree. Bumping is two PRs: tag a release of `kniferoll-linux-deb`, then in each consumer repo regenerate `lib/` and `lib/.vendor` in a single commit.
 
-Shared code reuse is via `kniferoll-linux-deb` semver tags. Updating the lib means tagging a release of `kniferoll-linux-deb`; bumping a script's lib pin is a one-line PR in that consumer script's repo. The vendored copy and its checksum manifest are regenerated and committed in the same PR. No live submodules, no curl-fetch-without-checksum.
+Why vendoring rather than the alternatives:
 
-### 5.5 GitHub repo creation, access grants, and discoverability — what Chef runs
+- **Submodules** require `git clone --recurse` and silently fail in air-gap or restricted-network environments. Vendoring works on a single shallow clone.
+- **Copy-on-update** (no machinery) drifts immediately and offers no audit trail.
+- **A 9th `silo-agent/kniferoll-core` repo** was considered and rejected. The argument for it is architectural symmetry — no script repo is privileged. The argument against is ceremony: the eight repos already exist, the lib is small, `kniferoll-linux-deb` is the reference implementation regardless, and creating a ninth repo to host code that has to live somewhere doesn't pay for itself today. If lib cadence later diverges meaningfully from the linux-deb script's release cadence, splitting `lib/` to `silo-agent/kniferoll-core` is the migration. It isn't this iteration's problem.
 
-These commands stand up the eight repos, grant `albethere` admin access, and apply the discovery topic. Run them yourself authenticated as `silo-agent` (`gh auth status` to confirm). Modifying access controls and granting permissions on shared resources is on the prohibited-actions list, so the design tooling will not issue them automatically.
+Trade-offs accepted: `kniferoll-linux-deb` carries a dual identity (script + lib host). A lib-only fix nominally requires a linux-deb tag even if the linux-deb script isn't changing. The release-notes convention (see §5.4) distinguishes `lib-only` releases from combined ones, which is enough.
 
-**Step 1 — create the four public repos:**
+### 5.4 Branch and release conventions
 
-```
-for r in kniferoll-mac kniferoll-windows kniferoll-linux-deb kniferoll-linux-arch; do
-  gh repo create silo-agent/$r --public \
-    --description "Opinionated terminal-environment installer ($r)"
-done
-```
+Across all eight repos:
 
-**Step 2 — create the four private repos:**
-
-```
-for r in kniferoll-managed-mac kniferoll-managed-windows \
-         kniferoll-managed-linux-deb kniferoll-managed-linux-arch; do
-  gh repo create silo-agent/$r --private \
-    --description "Corporate-CA-aware terminal-environment installer ($r)"
-done
-```
-
-**Step 3 — grant `albethere` admin on all eight (per-collaborator form, works for personal account or org):**
-
-```
-for r in kniferoll-mac kniferoll-windows kniferoll-linux-deb kniferoll-linux-arch \
-         kniferoll-managed-mac kniferoll-managed-windows \
-         kniferoll-managed-linux-deb kniferoll-managed-linux-arch; do
-  gh api repos/silo-agent/$r/collaborators/albethere -X PUT -f permission=admin
-done
-```
-
-**Step 4 — apply discoverability topics to the four public repos:**
-
-```
-for r in kniferoll-mac kniferoll-windows kniferoll-linux-deb kniferoll-linux-arch; do
-  gh api repos/silo-agent/$r/topics -X PUT \
-    -f names='["kniferoll","terminal","installer","dotfiles","zsh","powershell"]'
-done
-```
-
-**If `silo-agent` becomes a GitHub organization later,** swap step 3 for the team-based form, which is less per-repo bookkeeping when `albethere` should always have admin:
-
-```
-# (after silo-agent is converted to org and an `admins` team containing albethere exists)
-for r in kniferoll-mac kniferoll-windows kniferoll-linux-deb kniferoll-linux-arch \
-         kniferoll-managed-mac kniferoll-managed-windows \
-         kniferoll-managed-linux-deb kniferoll-managed-linux-arch; do
-  gh api orgs/silo-agent/teams/admins/repos/silo-agent/$r -X PUT -f permission=admin
-done
-```
-
-The per-collaborator form in step 3 above is what to run today.
+- **Branches.** `main` is the only long-lived branch. Work happens on `feat/<short>` or `fix/<short>` branches, lands via PR, and the branch is deleted on merge. No long-lived feature branches. Branch protection on `main`: required PR review, required passing CI, no force-push.
+- **Tags.** Semver, `v`-prefixed (`v1.0.0`, `v1.1.0`). Each repo versions independently — `kniferoll-mac@v1.4.2` and `kniferoll-windows@v1.7.0` are normal. Tags are signed where the local environment supports it.
+- **Releases.** The four public repos use GitHub Releases for changelog visibility. The four private repos tag only; the script in the working tree at a given tag *is* the artifact.
+- **Lib bumps.** Tagging a release of `kniferoll-linux-deb` flags consumers to bump. Each consumer's bump is its own PR — `lib/` regenerated, `lib/.vendor` regenerated, one commit. Consumers can land bumps independently; no batch coordination required.
+- **Lib-only releases.** A `kniferoll-linux-deb` tag whose only change is in `lib/` is annotated `lib-only` in the release notes. The linux-deb script's user-visible behavior at that tag is unchanged from the prior tag.
+- **CI on PR.** Each public repo runs a smoke test on PR (preflight + `--dry-run` + `--check`) on a Debian, Arch, or macOS GitHub-hosted runner as appropriate. Private repos run the same smoke shape on internal runners.
+- **Cross-repo design changes.** A change to the per-script skeleton or log format starts as a PR to `kniferoll-linux-deb` updating `lib/` and `lib/SKELETON.md`, ships in a tagged release, and propagates as ordinary lib-bump PRs in each consumer repo.
 
 ---
 
@@ -308,7 +242,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **One script per (OS × posture).** No dynamic dispatch, no plugin abstraction, no per-tool framework. The eight scripts are eight standalone artifacts. A user can read any one of them in one sitting.
 - **Tools are inline data, not a plugin system.** The tool inventory is a top-of-file array (or hash) read once. Adding a tool is one line; removing a tool is one line; auditing the inventory is reading the array. No `register_tool()` callbacks.
 - **POSIX bash for Unix, PowerShell 7 for Windows.** No Python in the install path, no Go binary as a hard dependency, no third-party CLI required to run the installer. The Go TUI selector and the Python projector are post-install conveniences that live in their own packages.
-- **No dispatcher.** The v1 `install.sh` exists because the three platform scripts share a name; with v2 each repo holds exactly one script named after its target, the user clones and invokes that script directly. There is no universal entrypoint, and that is correct: there is no universal install.
+- **No dispatcher.** The v1 `install.sh` exists because the three platform scripts share a name and a directory; v2 puts each script in its own repo, so each repo's `install.sh` (or `install.ps1`) is unambiguously the one for that target. There is no universal entrypoint, and that is correct: there is no universal install.
 - **Configs are single-file canonical templates with no templating engine.** The Zsh and PowerShell profiles are written verbatim from the script. Variation is by env var or post-install user override, not by Jinja-shaped substitution.
 - **One log format, one exit-code table, one rollback model.** All eight scripts share these via the `lib/` shipped in `kniferoll-linux-deb` and vendored into the other seven. A user who has used `kniferoll-linux-deb` already understands the logs, exit codes, and rollback story of `kniferoll-managed-mac`.
 - **Delete the supply-chain-guard framework.** The v1 abstraction allowed four risk modes but only ever shipped one. v2's rule is hardcoded: no curl-pipe-bash, ever, in any posture. If a tool can only be installed by piping a script, it does not get installed by kniferoll. Document the exception, do not engineer around it.
@@ -322,16 +256,16 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
 - **No splash-page bypass.** v1 included logic to auto-parse and submit Zscaler splash-page forms (`install_mac.sh:175-257`). v2 deliberately removes this. Setting up a managed shell does not require automated consent-page traversal — if a splash page intercepts an install-time download, the script errors with exit code 5 and instructs the user to open the URL in their browser, accept the splash page, and re-run. Auto-clicking through corporate consent screens is the kind of impersonation that should never live in this tool, even when it's convenient and even when v1 had it.
 - **No silent overwrites of user dotfiles.** Every dotfile change creates a timestamped backup *and* prints the diff to stderr before applying. Dry-run mode prints the diff and does not apply.
-- **Audit trail.** Every install writes a manifest to `~/.kniferoll/state/<script-name>-<isots>.json`: tool name, version installed, source URL, SHA256 of downloaded artifact, install method, timestamp, exit status. A `kniferoll status` companion script (shipped in `kniferoll-linux-deb/lib/` and vendored alongside `lib/` in every other repo) reads the most recent manifest and reports current state.
+- **Audit trail.** Every install writes a manifest to `~/.kniferoll/state/<repo>-<isots>.json` (e.g., `kniferoll-managed-mac-2026-05-01T22-15-04Z.json`): tool name, version installed, source URL, SHA256 of downloaded artifact, install method, timestamp, exit status. A `kniferoll status` companion (shipped in `kniferoll-linux-deb/lib/` and vendored alongside `lib/` in every other repo) reads the most recent manifest and reports current state.
 - **TLS 1.3 by default, TLS 1.2 fallback only in managed scripts.** Corporate proxies in 2026 should support TLS 1.3 nine years after RFC 8446. If they don't, that's a managed-script concern.
 - **Network egress check in preflight.** A simple HEAD to a known-stable URL with the configured CA bundle. If it fails, abort before any partial install. Half-installs are worse than failures.
 
 ### 6.3 Beauty
 
-- **Names are flat, not metaphorical.** `kniferoll-managed-linux-deb.sh` tells a reader the project (kniferoll), the posture (managed), and the OS family (linux-deb) without learning a codename map. The metaphor lives in the project name; the eight scripts inherit it without each needing their own alias.
+- **Names are flat, not metaphorical.** `silo-agent/kniferoll-managed-linux-deb` tells a reader the org, the project, the posture, and the OS family without learning a codename map. The metaphor lives in the project name; the eight repos inherit it without each needing their own alias.
 - **Output matters more than code.** The kitchen voice from `docs/FLAVOR.md` is preserved verbatim: one-liners for skip and success, box-bordered framing for security-relevant decisions, tactical not alarmist failure language. Variable names like `$GREEN`, `$ORANGE`, `$DIM` survive the rewrite. The Cyberwave palette stays.
 - **The README is the doorway.** Single-page, demo-first, install-instruction-second. Do not put a feature matrix above the fold. The user should know in five seconds whether kniferoll is for them.
-- **Filename hierarchy is human-readable.** `kniferoll-managed-linux-deb.sh` is short and explicit — a reader sees the project, the posture, and the OS without learning anything new. The file name is its own table of contents.
+- **The path hierarchy is human-readable.** `silo-agent/kniferoll-managed-linux-deb/install.sh` reads as org → project-posture-os → entry. A reader sees what they're running before opening the file.
 - **Errors don't blame users.** "Could not install X — even the best chefs order takeout sometimes." stays. "Operation completed successfully" never appears.
 - **Zero emoji in installer output.** The 🔪 in the README is fine; the installer prints only ASCII. Emoji renders inconsistently across terminals, themes, and SSH sessions, and that inconsistency is the opposite of beauty.
 - **Documentation has voice.** ARCHITECTURE.md, FLAVOR.md, SUPPLY_CHAIN_RISK.md, and zscaler.md (in the private repos) all keep their first-person, declarative tone. Manifestos > manuals.
@@ -340,9 +274,9 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 
 ## 7. Per-script structure
 
-Every one of the eight scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-linux-deb/lib/SKELETON.md`; new scripts are diffs against the skeleton.
+Every one of the eight scripts follows the same skeleton. The skeleton lives as a documented contract at `kniferoll-linux-deb/lib/SKELETON.md` and is vendored alongside the rest of `lib/` into every consumer repo; new scripts are diffs against the skeleton.
 
-**Header block.** Shebang (`#!/usr/bin/env bash` or `#!/usr/bin/env pwsh`), strict mode (`set -Eeuo pipefail` for bash, `Set-StrictMode -Version Latest` and `$ErrorActionPreference = 'Stop'` for PowerShell), then a 10-line comment header: script name, target, posture, version, build date, source repo URL, license, brief description, link to docs, the `kniferoll-linux-deb` tag the vendored `lib/` was sourced from + its SHA256.
+**Header block.** Shebang (`#!/usr/bin/env bash` or `#!/usr/bin/env pwsh`), strict mode (`set -Eeuo pipefail` for bash, `Set-StrictMode -Version Latest` and `$ErrorActionPreference = 'Stop'` for PowerShell), then a 10-line comment header: repo name, target OS, posture, version, build date, source repo URL, license, brief description, link to docs, the `kniferoll-linux-deb@<tag>` the vendored `lib/` was sourced from + its SHA256 (read from `lib/.vendor`).
 
 **Preflight.** Six checks, in order, each with its own exit code:
 
@@ -370,7 +304,7 @@ Each preflight failure prints the specific reason and exits with the matching co
 - `--shell-only`: install only the shell environment (Zsh/PowerShell config + plugins + minimal tools).
 - `--help`: usage and exit.
 
-**Log format.** Every line: `<isots> <level> <script-name> <phase> <step> | <message>`. Levels: `OK`, `INFO`, `WARN`, `SKIP`, `ERROR`. Logs go to stderr (for live tail) and to `~/.kniferoll/logs/<script-name>-<isots>.log` (for after-the-fact audit). The split-terminal UI from `lib/split_terminal.sh` v1 is preserved as an opt-in (`--split-ui` flag), not a default — it's lovely but it conflicts with `--dry-run | less` and other piping patterns.
+**Log format.** Every line: `<isots> <level> <repo> <phase> <step> | <message>`. Levels: `OK`, `INFO`, `WARN`, `SKIP`, `ERROR`. The `<repo>` token is the bare repo name (e.g., `kniferoll-managed-mac`), since every script's filename is just `install.sh` and would not disambiguate. Logs go to stderr (for live tail) and to `~/.kniferoll/logs/<repo>-<isots>.log` (for after-the-fact audit). The split-terminal UI from v1's `lib/split_terminal.sh` is preserved as an opt-in (`--split-ui` flag), not a default — it's lovely but it conflicts with `--dry-run | less` and other piping patterns.
 
 **Exit codes.**
 
@@ -437,26 +371,25 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 ## 9. Open questions
 
-Decisions deferred to Chef. The first three are the ones I most want input on before phase 1 starts.
+Three remain. Everything else is resolved (see below) or scoped to a phase boundary.
 
-1. **WSL2 status.** I propose folding WSL2 into `kniferoll-linux-deb.sh` (and `kniferoll-managed-linux-deb.sh` if used in corp WSL2) with a small `if-wsl` branch, rather than promoting it to a ninth target. WSL2 is Debian-on-Hyper-V and doesn't justify its own script — but you may know things about the corporate WSL2 setup (custom rootfs, internal mirrors, MDM hooks into the Hyper-V layer) that change the math.
-2. **TUI selector and projector — keep, fold, or split off?** v1 bundles a Go TUI selector and a Python projector that have nothing to do with the install proper. My recommendation is to split both into dedicated repos under `silo-agent`: `silo-agent/kniferoll-shell` (the post-install shell-experience runtime, which would own zoxide/starship/aliases-as-code) and `silo-agent/kniferoll-projector` (the animation orchestrator). This lets the v2 install scripts stay shell-native and dependency-light.
-3. **Vendoring mechanics from `kniferoll-linux-deb` to the other seven repos.** The lib lives inside `kniferoll-linux-deb`. Three viable mechanisms for getting a copy into each consumer at a pinned tag: (a) committed `vendor/lib/` directory + `vendor.sha256` regenerated on lib bumps — clean, portable, no install-time network, fully air-gapped-friendly; (b) `git subtree pull` from a tagged ref — preserves history but adds workflow learning; (c) `git submodule` pinned to a tag — live but spookier on clone, fragile in air-gapped environments. My recommendation is (a). Confirm.
+1. **WSL2 status.** Fold WSL2 into `silo-agent/kniferoll-linux-deb` (and the managed twin if needed) with a small `if-wsl` branch, or promote to a ninth target? WSL2 is Debian-on-Hyper-V and doesn't justify its own script unless the corporate WSL2 setup (custom rootfs, internal mirrors, MDM hooks into the Hyper-V layer) materially changes the math.
+2. **TUI selector and projector — keep, fold, or split off?** v1 bundles a Go TUI selector and a Python projector that have nothing to do with installation. The clean answer is to split them into separate repos (`silo-agent/kniferoll-shell` for the post-install shell-experience runtime; `silo-agent/kniferoll-projector` for the animation orchestrator) so the v2 install scripts stay shell-native and dependency-light. Confirm.
+3. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), `gum` (Windows-only in v1 — promote to all platforms or remove?), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). Needs an answer before phase 5.
 
-The remaining five are deferred but lower-stakes:
+**Phase-5 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 5.
 
-4. **Old `terminal-kniferoll` repo disposition.** Keep on `main` as a frozen v1 reference, or delete in favor of the new family? I recommend keeping it; tag the last v1 commit as `v1-final` and let it rest as documentation of "what we used to do and why."
-5. **Inventory bumps from v1 to v2.** v2 needs an explicit decision on: Anthropic Claude CLI (currently winget-only on Windows; should it be cross-platform now?), `gum` (Windows-only in v1; promote to all platforms or remove?), the AI-CLI bucket (gemini-cli, claude — first-class category or opt-in module?). I'd like Chef's call before phase 5.
-6. **Telemetry stance.** No telemetry, ever, in any posture. I want this written into `kniferoll-linux-deb/docs/ARCHITECTURE.md` as a one-line non-negotiable. Confirm.
-7. **`kniferoll` as the project name.** Drop the `terminal-` prefix from the project, the binary, the repo names. The prefix is redundant — what else would a knife roll be? Confirm or push back.
-8. **Corp-side hostname/policy file format.** Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see the no-splash-bypass position in §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch (§6.2). Format and precedence to be designed in phase 5.
+### Resolved
 
-### Resolved by Chef
-
-- **Naming.** Flat scheme: `kniferoll-<os>` and `kniferoll-managed-<os>`. No codename theme.
-- **Repo granularity.** Eight repos under `silo-agent`. No separate library repo; `lib/` lives in `kniferoll-linux-deb` and is vendored into the other seven.
-- **`silo-agent` account shape.** Personal account today, possibly an organization later. Access-grant commands in §5.5 use the per-collaborator form, which works against both shapes.
-- **Internal-repos toggle posture.** Built but off by default in v2.0 (§6.2). Code paths ship in managed scripts; the toggle gets a follow-up release once corporate mirrors are testable (phase 9).
+- **Naming.** Flat: `kniferoll-<os>` and `kniferoll-managed-<os>`. Entry script inside each repo is `install.sh` (Unix) / `install.ps1` (Windows).
+- **Repo granularity.** Eight repos under `silo-agent` (extant). No 9th library repo; `lib/` lives in `kniferoll-linux-deb` and is vendored into the other seven.
+- **Vendoring mechanics.** Committed `lib/` snapshot + `lib/.vendor` (tag + SHA256). Bumping is one PR per consumer.
+- **Account shape.** Personal account today, possibly org later. Per-collaborator grants today; team grants on org conversion.
+- **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 9 wires it on.
+- **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
+- **Project name.** `kniferoll`. The `terminal-` prefix is dead.
+- **Old `terminal-kniferoll` repo.** Keep on `main` as a frozen v1 reference. Tag the last v1 commit `v1-final`. Let it rest as documentation of what we used to do and why.
+- **Telemetry.** None, ever, in any posture. Recorded in `kniferoll-linux-deb/docs/ARCHITECTURE.md` as a non-negotiable.
 
 ---
 
@@ -464,27 +397,27 @@ The remaining five are deferred but lower-stakes:
 
 Sequenced by what unlocks the most learning fastest, not by OS.
 
-**Phase 0 — Approval and access.** Chef reviews this plan. Open questions resolved. Naming locked (done). Repo strategy locked (done — eight repos, lib in `kniferoll-linux-deb`). The eight repos created under `silo-agent` (4 public + 4 private). Admin grants issued to `albethere` per §5.5. Discoverability topics applied to public repos. No code yet.
+**Phase 0 — Pre-flight.** Mostly already done: eight repos exist, admin grants issued, naming and repo strategy locked. Remaining before phase 1: confirm WSL2, TUI/projector, and inventory-bump open questions (§9). No code yet.
 
-**Phase 1 — Skeleton.** Empty scaffolding committed to all four unmanaged script repos (header, preflight, mode flags, exit codes, log format, no install logic yet). `kniferoll-linux-deb/lib/` v0.1.0 stubs (download-and-verify, log format, exit-code helpers, manifest writer) — tag is cut when the script ships in phase 2; consumers (the other seven repos) vendor at that tag. README, FLAVOR.md, ARCHITECTURE.md drafted in `kniferoll-linux-deb/docs/`. Goal: a user can clone any unmanaged repo, run `kniferoll-<os> --dry-run`, and see the skeleton produce empty output without errors.
+**Phase 1 — Skeleton.** Empty scaffolding committed to all four unmanaged repos: `install.sh`, header block, preflight, mode flags, exit codes, log format — no install logic yet. `kniferoll-linux-deb/lib/` v0.1.0 stubs (download-and-verify, log format, exit-code helpers, manifest writer); tagged when the script ships in phase 2. `kniferoll-linux-deb/docs/` gets the first drafts of `ARCHITECTURE.md`, `FLAVOR.md`, `SKELETON.md`. Goal: a user can clone any unmanaged repo, run `./install.sh --dry-run` (or `.\install.ps1 -DryRun` on Windows), and see the skeleton produce empty output without errors.
 
-**Phase 2 — First slice (`kniferoll-linux-deb`).** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + dry-run + check + force. This is the reference implementation. Every later script is a diff against this. Chosen for first because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is the canonical and best-tested.
+**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force`. This is the reference implementation; every later script is a diff against it. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0` (and with it the first lib tag the other seven will vendor).
 
-**Phase 3 — Same hand, new arch (`kniferoll-linux-arch`).** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-linux-deb` (script and `lib/`) as appropriate; `kniferoll-linux-arch` vendors the updated lib tag.
+**Phase 3 — Same hand, new arch: `kniferoll-linux-arch`.** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-linux-deb` (script and/or `lib/`); `kniferoll-linux-arch` vendors the updated lib tag.
 
-**Phase 4 — Cross the threshold (`kniferoll-mac`).** Homebrew. Different file paths (`~/.zshrc` vs `~/.zprofile` precedence, `/opt/homebrew` prefix, iTerm2 colorscheme deployment). The lib proves itself across two OS families.
+**Phase 4 — Cross the threshold: `kniferoll-mac`.** Homebrew, different file paths (`~/.zshrc` vs `~/.zprofile` precedence, `/opt/homebrew` prefix, iTerm2 colorscheme deployment). The lib proves itself across two OS families.
 
-**Phase 5 — Mind the proxy (`kniferoll-managed-linux-deb`).** First managed-repo work. `kniferoll-linux-deb`'s lib bumped (e.g., v0.2.0) if it needs new primitives for corp posture. Implement: corp-CA detection (auto-detect path list + `--ca-bundle` override), CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), and the corp policy file reader (per §9 OQ#8). Splash-page bypass is *not* implemented — if encountered, exit 5 with an instruction to accept in browser. Goal: get the corp posture *exactly right* on one script before extending to others. The corp-CA propagation is the highest-stakes code in v2; phase 5 is where it's invented.
+**Phase 5 — Mind the proxy: `kniferoll-managed-linux-deb`.** First managed-repo work. Bump `kniferoll-linux-deb` lib (e.g., to `v0.2.0`) if new primitives are needed for corp posture. Implement: corp-CA detection (auto-detect path list + `--ca-bundle` override), CA bundle propagation across the env-var fan-out (§6.2), the **internal-repos toggle code paths** (off by default, per §6.2), the corp policy file reader. No splash-page bypass — if encountered, exit 5 with an instruction to accept in browser. Goal: get the corp posture *exactly right* on one script before extending. The corp-CA propagation is the highest-stakes code in v2.
 
-**Phase 6 — Fill the matrix (`kniferoll-managed-mac`, `kniferoll-managed-linux-arch`).** Port the corp-CA work from `kniferoll-managed-linux-deb` into the other two managed Unix scripts. By now the pattern is set; these are diffs against phase 5 and their unmanaged twins.
+**Phase 6 — Fill the matrix: `kniferoll-managed-mac`, `kniferoll-managed-linux-arch`.** Port the corp-CA work from phase 5 into the other two managed Unix scripts. By now the pattern is set; these are diffs against phase 5 and their unmanaged twins.
 
-**Phase 7 — Other shore (`kniferoll-windows`, `kniferoll-managed-windows`).** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. This phase is the longest because PowerShell is foreign to most of the project's muscle memory.
+**Phase 7 — Other shore: `kniferoll-windows`, `kniferoll-managed-windows`.** PowerShell 7. winget. Scoop. Both unmanaged and managed in the same phase because the corp-CA work for Windows is sufficiently different from Unix (cert store enumeration, `CARGO_HTTP_CAINFO`, group-policy paths) that it benefits from being designed against both audiences at once. The longest phase, because PowerShell is foreign to most of the project's muscle memory.
 
-**Phase 8 — Ship v2.0.** Demo GIFs. README polish. CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every script repo. The `KR_INTERNAL_REPOS` toggle ships *disabled* per §6.2; first-iteration v2.0 works against public sources end-to-end on every posture. Frozen v1 `terminal-kniferoll` repo gets a `README` pointer to the new family. Beads tracker updated. Done.
+**Phase 8 — Ship v2.0.** Demo GIFs. README polish. CI per public repo. Smoke tests for the managed repos (running internally). Tag `v1.0.0` on every repo. `KR_INTERNAL_REPOS` ships *disabled* per §6.2; v2.0 works end-to-end against public sources on every posture. The frozen `albethere/terminal-kniferoll` repo gets a `README` pointer to the new family and a `v1-final` tag on its last commit.
 
-**Phase 9 (post-v2.0) — Internal-repos enablement.** Wire the off-by-default `KR_INTERNAL_REPOS` paths from phase 5 to a real corporate-mirror configuration (per resolved OQ #8). Test against staged internal mirrors. Tag managed scripts `v1.1.0` with the toggle ready for users who set the flag. The toggle stays per-user/per-host, never globally on by default.
+**Phase 9 (post-v2.0) — Internal-repos enablement.** Wire the off-by-default `KR_INTERNAL_REPOS` paths from phase 5 to a real corporate-mirror configuration. Test against staged internal mirrors. Tag managed scripts `v1.1.0` with the toggle ready for users who set the flag. The toggle stays per-user/per-host, never globally on by default.
 
-The phasing front-loads the highest-risk work (corp-CA in phase 5) only *after* the unmanaged shape is locked in three platforms. This means the corp design has three working examples to defend against, and the corp work is not allowed to leak back into the unmanaged path. That separation is the rewrite's central structural bet, and the phasing is built to enforce it.
+Phasing front-loads the highest-risk work (corp-CA in phase 5) only *after* the unmanaged shape is locked in three platforms. The corp design has three working examples to defend against, and the corp work is not allowed to leak back into the unmanaged path. That separation is the rewrite's central structural bet, and the phasing is built to enforce it.
 
 ---
 
@@ -492,15 +425,12 @@ The phasing front-loads the highest-risk work (corp-CA in phase 5) only *after* 
 
 Plan-level verification before any code is written:
 
-- Walk Chef through this document and resolve the remaining open questions in section 9.
-- Confirm the eight-repo strategy and the `silo-agent` setup.
-- Confirm WSL2, projector, and TUI dispositions.
-- Run the §5.5 commands to create the repos and issue the GitHub admin grants.
+- Resolve the three remaining open questions in §9 (WSL2, TUI/projector split-off, inventory bumps).
 
 Code-level verification per phase:
 
-- Each script has a `--dry-run` that produces parseable output covered by a smoke test.
-- Each script has a `--check` that reports drift against its own manifest.
+- Each `install.sh` / `install.ps1` has a `--dry-run` (or `-DryRun`) that produces parseable output covered by a smoke test.
+- Each `install.sh` / `install.ps1` has a `--check` that reports drift against its own manifest.
 - Each script's preflight has a unit-testable failure path for every exit code (2.1 through 2.6).
 - `kniferoll-linux-deb/lib/` has a test suite ported and modernized from v1's `scripts/test-sweep.{sh,ps1}`.
 - Phase 5's corp-CA propagation has integration tests that simulate a TLS-inspecting proxy (mitmproxy with a self-signed CA) and verify every propagated env var is set, every tool can curl through, and the manifest reflects the bundle source. The internal-repos code paths have unit tests against a staged mirror config but ship disabled until phase 9.
