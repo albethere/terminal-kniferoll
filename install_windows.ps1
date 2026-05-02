@@ -896,6 +896,95 @@ function Invoke-ZscalerProfileSweep {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
+# DEPRECATED-TOOL PROFILE SWEEP (PS equivalent of sweep_deprecated_tools in
+# lib/rc_sweep.sh)
+#
+# Tools we no longer install. On every run, sweep their PS profile entries
+# clean. Marker convention: any tool that wrote profile lines fenced as
+#     # BEGIN terminal-kniferoll <name> -- DO NOT EDIT (managed by installer)
+#     ...content...
+#     # END terminal-kniferoll <name>
+# is auto-sweepable when added to $KniferollDeprecatedTools below.
+# To deprecate a new tool: append a hashtable with Name + RawLinePattern.
+# ══════════════════════════════════════════════════════════════════════════════
+
+$Script:KniferollDeprecatedTools = @(
+    @{ Name = 'atuin'; RawLinePattern = '^\s*Invoke-Expression.*atuin\s+init' }
+)
+
+function Strip-DeprecatedToolRegionsPS {
+    # Returns @{ Content = <string>; Changed = <bool> }, or $null if file absent.
+    # Removes BEGIN/END marker blocks for $ToolName and any line matching
+    # $RawLinePattern. Anchored regex assumed in $RawLinePattern to avoid
+    # eating commented documentation lines.
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$ToolName,
+        [Parameter(Mandatory)][string]$RawLinePattern
+    )
+    if (-not (Test-Path $FilePath)) { return $null }
+    $beginRe = "^#\s*BEGIN terminal-kniferoll $([regex]::Escape($ToolName))"
+    $endRe   = "^#\s*END terminal-kniferoll $([regex]::Escape($ToolName))"
+    $lines   = [System.IO.File]::ReadAllLines($FilePath)
+    $out     = [System.Collections.Generic.List[string]]::new()
+    $inBlock = $false
+    $changed = $false
+    foreach ($line in $lines) {
+        if ($inBlock) {
+            if ($line -match $endRe) { $inBlock = $false; $changed = $true }
+            else                     {                     $changed = $true }
+            continue
+        }
+        if ($line -match $beginRe)        { $inBlock = $true;  $changed = $true; continue }
+        if ($line -match $RawLinePattern) {                    $changed = $true; continue }
+        $out.Add($line) | Out-Null
+    }
+    return @{ Content = ($out -join "`n"); Changed = $changed }
+}
+
+function Invoke-DeprecatedToolSweep {
+    # Sweeps orphaned init lines for every tool in $KniferollDeprecatedTools
+    # across all known PS profile paths. Idempotent: silent no-op when clean.
+    Write-Section "DEPRECATED-TOOL PROFILE SWEEP"
+    $targets = @(
+        $PROFILE,
+        (Join-Path $env:USERPROFILE 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'),
+        (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+    if ($targets.Count -eq 0) {
+        Write-Info "No existing PS profile files found — sweep skipped"
+        return
+    }
+    $any = $false
+    foreach ($tool in $Script:KniferollDeprecatedTools) {
+        foreach ($t in $targets) {
+            $r = Strip-DeprecatedToolRegionsPS `
+                    -FilePath $t `
+                    -ToolName $tool.Name `
+                    -RawLinePattern $tool.RawLinePattern
+            if ($null -ne $r -and $r.Changed) {
+                # Backup convention mirrors Upsert-ProfileZscalerBlock.
+                $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+                $backup = "$t.terminal-kniferoll-backup-$ts"
+                Copy-Item $t $backup -Force
+                Write-Info "  backup: $backup"
+                # Prune: keep 5 most recent backups per profile file.
+                $stale = Get-ChildItem "$t.terminal-kniferoll-backup-*" -ErrorAction SilentlyContinue |
+                         Sort-Object LastWriteTime -Descending | Select-Object -Skip 5
+                foreach ($b in $stale) { Remove-Item $b.FullName -Force -ErrorAction SilentlyContinue }
+                $bom = New-Object System.Text.UTF8Encoding($true)
+                [System.IO.File]::WriteAllText($t, $r.Content + "`n", $bom)
+                Write-Info "[~] cleaned: removed orphaned $($tool.Name) entry from $t"
+                $any = $true
+            }
+        }
+    }
+    if (-not $any) {
+        Write-Info "no orphaned deprecated-tool entries found"
+    }
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ZSCALER — DIAGNOSTIC STATUS
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2259,6 +2348,7 @@ Initialize-PackageManagers  # Scoop + Choco + gum
 Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Write-ZscalerEnvFile        # write env file with Windows-specific detection paths
 Invoke-ZscalerProfileSweep # sweep old Zscaler blocks from existing PS profiles
+Invoke-DeprecatedToolSweep  # sweep orphaned init lines from deprecated tools (atuin, …)
 Start-LogViewerWindow       # spawn the cyberwave-bordered live log window
 Resolve-InstallMode         # gum-based picker (now available)
 

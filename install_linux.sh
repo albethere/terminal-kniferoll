@@ -771,11 +771,7 @@ cleanup_removed_tools() {
         rm -f "$HOME/.cargo/bin/atuin" 2>/dev/null || true
         [[ -d "$HOME/.atuin" ]] && \
             run_optional "Removing ~/.atuin data dir" rm -rf "$HOME/.atuin"
-        # Scrub atuin init from deployed zshrc
-        if [[ -f "$HOME/.zshrc" ]]; then
-            sed -i '/command -v atuin.*atuin init zsh/d' "$HOME/.zshrc" 2>/dev/null || true
-            ok "atuin init removed from ~/.zshrc"
-        fi
+        # Profile scrub handled by sweep_deprecated_tools (lib/rc_sweep.sh)
         if [[ "$PKG_MGR" == "pacman" ]]; then
             pacman -Qi atuin &>/dev/null 2>&1 && \
                 run_optional "Removing atuin (pacman)" \
@@ -1337,6 +1333,7 @@ fi
 # ── Evict tools removed from this project ─────────────────────────────────────
 banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
 cleanup_removed_tools
+sweep_deprecated_tools
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1. CORE PREREQUISITES

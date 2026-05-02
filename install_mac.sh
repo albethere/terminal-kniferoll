@@ -486,8 +486,7 @@ cleanup_removed_tools() {
             run_optional "Removing atuin (brew)" brew uninstall atuin || true
         [[ -d "$HOME/.atuin" ]] && \
             run_optional "Removing ~/.atuin data dir" rm -rf "$HOME/.atuin"
-        [[ -f "$HOME/.zshrc" ]] && \
-            sed -i '' '/command -v atuin.*atuin init zsh/d' "$HOME/.zshrc" 2>/dev/null || true
+        # Profile scrub handled by sweep_deprecated_tools (lib/rc_sweep.sh)
         ok "atuin — evicted"
     fi
 
@@ -1068,6 +1067,7 @@ info "Supply chain: strict (TLS enforced, hashes verified where available)"
 # ── Evict tools removed from this project ─────────────────────────────────────
 banner "HOUSEKEEPING — EVICTING REMOVED TOOLS"
 cleanup_removed_tools
+sweep_deprecated_tools
 
 # ────────────────────────────────────────────────────────────────────────────
 # 1. CORE PREREQUISITES

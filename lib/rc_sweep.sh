@@ -151,3 +151,90 @@ sweep_rc_files() {
     done
     unset _rc
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DEPRECATED-TOOL RC SWEEP
+# ──────────────────────────────────────────────────────────────────────────────
+# Tools we no longer install. On every run, sweep their profile entries clean.
+#
+# Marker convention: any tool that wrote profile lines fenced as
+#     # BEGIN terminal-kniferoll <name> — DO NOT EDIT (managed by installer)
+#     ...content...
+#     # END terminal-kniferoll <name>
+# is auto-sweepable when its name is added to KNIFEROLL_DEPRECATED_TOOLS.
+# To deprecate a new tool: add the name to the array below AND add a case arm
+# to _deprecated_tool_pattern with a regex that matches its raw init line(s).
+# ──────────────────────────────────────────────────────────────────────────────
+
+KNIFEROLL_DEPRECATED_TOOLS=(atuin)
+
+# Anchored regex matching the tool's standalone raw init line.
+# Anchoring with ^[[:space:]]*<keyword> excludes commented lines (# eval ...).
+_deprecated_tool_pattern() {
+    case "$1" in
+        atuin) printf '%s' '^[[:space:]]*eval[[:space:]].*atuin[[:space:]]+init' ;;
+        *)     printf '' ;;
+    esac
+}
+
+# Legacy back-compat: catches the wrapped form scrubbed by the prior broken sed.
+# Anchored to start-of-line (with optional `if` prefix) so comments survive.
+_deprecated_tool_legacy_pattern() {
+    case "$1" in
+        atuin) printf '%s' '^[[:space:]]*(if[[:space:]]+)?command -v atuin.*atuin init' ;;
+        *)     printf '' ;;
+    esac
+}
+
+_sweep_deprecated_tool_in_file() {
+    local tool="$1" rc="$2"
+    [[ -f "$rc" ]] || return 1
+    local raw_re legacy_re begin_re end_re
+    raw_re="$(_deprecated_tool_pattern "$tool")"
+    legacy_re="$(_deprecated_tool_legacy_pattern "$tool")"
+    begin_re="^# BEGIN terminal-kniferoll ${tool}"
+    end_re="^# END terminal-kniferoll ${tool}"
+
+    # Idempotency guard — silent no-op if nothing matches.
+    if ! grep -Eq "${raw_re}|${legacy_re}|${begin_re}" "$rc" 2>/dev/null; then
+        return 1
+    fi
+
+    backup_rc_file "$rc"
+    local tmp; tmp="$(mktemp)"; chmod 600 "$tmp"
+    awk -v B="$begin_re" -v E="$end_re" -v R="$raw_re" -v L="$legacy_re" '
+        BEGIN { in_block = 0 }
+        {
+            if (in_block) { if ($0 ~ E) in_block = 0; next }
+            if ($0 ~ B)   { in_block = 1; next }
+            if (R != "" && $0 ~ R) next
+            if (L != "" && $0 ~ L) next
+            print
+        }
+    ' "$rc" > "$tmp"
+    mv -f "$tmp" "$rc"
+    info "[~] cleaned: removed orphaned ${tool} entry from ${rc}"
+    return 0
+}
+
+sweep_deprecated_tools() {
+    banner "DEPRECATED-TOOL RC SWEEP"
+    local tool rc any=false
+    local rc_files=(
+        "$HOME/.zshrc"
+        "$HOME/.bashrc"
+        "$HOME/.zprofile"
+        "$HOME/.bash_profile"
+        "$HOME/.profile"
+    )
+    for tool in "${KNIFEROLL_DEPRECATED_TOOLS[@]}"; do
+        for rc in "${rc_files[@]}"; do
+            if _sweep_deprecated_tool_in_file "$tool" "$rc"; then
+                any=true
+            fi
+        done
+    done
+    if ! $any; then
+        skip "no orphaned deprecated-tool entries found"
+    fi
+}
