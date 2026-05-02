@@ -36,8 +36,6 @@
     Do not auto-install PowerShell 7 even when running on 5.1.
 .PARAMETER NoRelaunch
     Do not relaunch in pwsh after installing PS 7. Stay in current session.
-.PARAMETER NoLogViewer
-    Do not spawn the side log-viewer window.
 .PARAMETER Help
     Show this help message and exit.
 
@@ -71,7 +69,6 @@ param(
     [switch]$Custom,
     [switch]$SkipPwshUpgrade,
     [switch]$NoRelaunch,
-    [switch]$NoLogViewer,
     [Alias('h')]
     [switch]$Help,
     [switch]$DryRun,
@@ -261,7 +258,6 @@ if ($Help) {
       -Custom            Choose individual tool groups interactively
       -SkipPwshUpgrade   Do not auto-install PowerShell 7
       -NoRelaunch        Do not relaunch in pwsh after PS 7 install
-      -NoLogViewer       Do not spawn the side log-viewer window
       -Help              Show this help and exit
 
   INSTALL GROUPS
@@ -534,9 +530,9 @@ function Invoke-ZscalerTrustSetup {
         )
         # Also glob any .crt / .pem under C:\ProgramData\Zscaler\
         if (Test-Path 'C:\ProgramData\Zscaler') {
-            $found = Get-ChildItem 'C:\ProgramData\Zscaler' -Filter '*.crt' -Recurse -ErrorAction SilentlyContinue |
-                     Where-Object { $_.Name -match 'zscaler' -or $_.DirectoryName -match 'zscaler' }
-            if ($found) { $zscCandidates = @($found[0].FullName) + $zscCandidates }
+            $found = @(Get-ChildItem 'C:\ProgramData\Zscaler' -Filter '*.crt' -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -match 'zscaler' -or $_.DirectoryName -match 'zscaler' })
+            if ($found.Count -gt 0) { $zscCandidates = @($found[0].FullName) + $zscCandidates }
         }
         foreach ($c in $zscCandidates) {
             if (Test-Path $c) {
@@ -559,13 +555,13 @@ function Invoke-ZscalerTrustSetup {
 
         foreach ($loc in $storeLocations) {
             try {
-                $certs = Get-ChildItem "Cert:\$loc\Root" -ErrorAction Stop |
+                $certs = @(Get-ChildItem "Cert:\$loc\Root" -ErrorAction Stop |
                          Where-Object {
                              ($_.Subject  -match '(?i)zscaler') -or
                              ($_.Issuer   -match '(?i)zscaler') -or
                              ($_.FriendlyName -match '(?i)zscaler')
-                         }
-                if ($certs) {
+                         })
+                if ($certs.Count -gt 0) {
                     $sb = [System.Text.StringBuilder]::new()
                     foreach ($cert in $certs) {
                         $b64 = [Convert]::ToBase64String($cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert), 'InsertLineBreaks')
@@ -881,11 +877,11 @@ function Invoke-ZscalerProfileSweep {
     # Sweeps Zscaler blocks in all known PS profile paths (equivalent to
     # sweep_rc_files in lib/rc_sweep.sh). Skips paths that don't exist.
     Write-Section "ZSCALER PROFILE SWEEP"
-    $targets = @(
+    $targets = @(@(
         $PROFILE,
         (Join-Path $env:USERPROFILE 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'),
         (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
-    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)
     if ($targets.Count -eq 0) {
         Write-Info "No existing PS profile files found — sweep skipped"
         return
@@ -1197,7 +1193,6 @@ function Restart-InPwsh {
         '-File', $scriptPath
     )
     if ($Mode) { $relayArgs += "-$Mode" }
-    if ($NoLogViewer) { $relayArgs += '-NoLogViewer' }
 
     Write-OK "Continuing in a fresh PowerShell 7 window..."
     try {
@@ -1478,118 +1473,15 @@ function Install-Gum {
 }
 
 # =============================================================================
-# LIVE LOG VIEWER (separate terminal window, bordered)
+# LIVE LOG VIEWER -- removed
+#
+# TODO(v2): true split-pane live log via wt.exe -p split-pane, not a separate
+# window. See V2_PLAN.md TUI parity section.
+#
+# Escape hatch in the meantime: file-based logging is unaffected. Tail it from
+# a separate shell with:
+#     Get-Content -Wait $env:USERPROFILE\.terminal-kniferoll\logs\install_*.log
 # =============================================================================
-
-function Start-LogViewerWindow {
-    if ($NoLogViewer) {
-        Write-Info "-NoLogViewer set -- skipping side log window"
-        return
-    }
-
-    $logPath = $Script:LogFile
-    if (-not (Test-Path $logPath)) {
-        # Create the file so Get-Content -Wait has something to grab.
-        New-Item -ItemType File -Force -Path $logPath | Out-Null
-    }
-
-    # The viewer script lives in $env:TEMP and tails the log forever.
-    $cwBorder  = $Script:CW.Pink
-    $cwHeading = $Script:CW.Cyan
-    $cwAccent  = $Script:CW.Yellow
-
-    $tailScript = @"
-`$ErrorActionPreference = 'Continue'
-`$Host.UI.RawUI.WindowTitle = 'terminal-kniferoll  //  live install log'
-
-function Show-Header {
-    if (Get-Command gum -ErrorAction SilentlyContinue) {
-        & gum style ``
-            --border 'double' ``
-            --border-foreground '$cwBorder' ``
-            --foreground '$cwHeading' ``
-            --padding '1 6' ``
-            --margin '1 2' ``
-            --align 'center' ``
-            "TERMINAL  KNIFEROLL`nLive Install Log  //  Cyberwave"
-        & gum style --foreground '$cwAccent' "  Tailing: '$logPath'"
-        Write-Host ''
-    } else {
-        Write-Host ''
-        Write-Host '  +==============================================================+' -ForegroundColor Magenta
-        Write-Host '  |          TERMINAL KNIFEROLL  //  live install log            |' -ForegroundColor Cyan
-        Write-Host '  +==============================================================+' -ForegroundColor Magenta
-        Write-Host "  Tailing: '$logPath'" -ForegroundColor Yellow
-        Write-Host ''
-    }
-}
-
-Show-Header
-
-# Wait for the file to exist (parent may still be initializing)
-`$start = Get-Date
-while (-not (Test-Path '$logPath')) {
-    if ((Get-Date) - `$start -gt [TimeSpan]::FromSeconds(30)) {
-        Write-Host '  Log file did not appear within 30 seconds. Exiting.' -ForegroundColor Red
-        exit 1
-    }
-    Start-Sleep -Milliseconds 200
-}
-
-Get-Content -Path '$logPath' -Wait | ForEach-Object {
-    `$line = `$_
-    if (`$null -eq `$line) { return }
-    `$text = "`$line"
-    if (`$text -match '\[ERROR\]')    { Write-Host `$text -ForegroundColor Red }
-    elseif (`$text -match '\[WARN\]') { Write-Host `$text -ForegroundColor Yellow }
-    elseif (`$text -match '\[OK\]')   { Write-Host `$text -ForegroundColor Green }
-    elseif (`$text -match '\[INFO\]') { Write-Host `$text -ForegroundColor Cyan }
-    else                                { Write-Host `$text -ForegroundColor Gray }
-    if (`$text -match '=== INSTALL COMPLETE ===') {
-        Write-Host ''
-        if (Get-Command gum -ErrorAction SilentlyContinue) {
-            & gum style ``
-                --border 'double' ``
-                --border-foreground '$cwBorder' ``
-                --foreground '$cwHeading' ``
-                --padding '1 6' ``
-                --margin '1 2' ``
-                --align 'center' ``
-                'INSTALL COMPLETE  //  knives sharp.'
-        }
-        Write-Host '  Press any key to close this window...' -ForegroundColor DarkGray
-        `$null = `$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-        exit 0
-    }
-}
-"@
-
-    $tempScript = Join-Path $env:TEMP "tk-logviewer-$([guid]::NewGuid().Guid).ps1"
-    Set-Content -Path $tempScript -Value $tailScript -Encoding UTF8 -Force
-
-    try {
-        # Prefer Windows Terminal in a NEW window with the Cyberwave color scheme.
-        if (Test-Cmd wt) {
-            $shellExe = if (Test-Cmd pwsh) { 'pwsh.exe' } else { 'powershell.exe' }
-            $wtArgs = @(
-                '-w', 'new', 'new-tab',
-                '--title', 'terminal-kniferoll  //  live log',
-                '--colorScheme', 'Cyberwave',
-                $shellExe, '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $tempScript
-            )
-            Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs -ErrorAction Stop | Out-Null
-            Write-OK "Live log viewer opened in new Windows Terminal window"
-        } else {
-            $shellExe = if (Test-Cmd pwsh) { 'pwsh.exe' } else { 'powershell.exe' }
-            Start-Process -FilePath $shellExe -ArgumentList @(
-                '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $tempScript
-            ) -ErrorAction Stop | Out-Null
-            Write-OK "Live log viewer opened in new $shellExe window"
-        }
-    } catch {
-        Write-Warn "Could not open live log viewer: $($_.Exception.Message)"
-    }
-}
 
 # =============================================================================
 # INSTALL HELPERS
@@ -1897,6 +1789,15 @@ if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
     }
 }
 
+# ---- starship (installed but DISABLED -- oh-my-posh is the active prompt) ---
+# Two prompts cannot coexist: the second `Invoke-Expression` wins silently and
+# the first one wastes startup. To switch from oh-my-posh to starship, comment
+# out the oh-my-posh block ABOVE and uncomment the line below.
+#
+# if (Get-Command starship -ErrorAction SilentlyContinue) {
+#     Invoke-Expression (&starship init powershell)
+# }
+
 # ---- PSReadLine (autosuggest + history search + colors) ---------------------
 if (Get-Module -ListAvailable PSReadLine) {
     Import-Module PSReadLine
@@ -1931,6 +1832,14 @@ if (Get-Command zoxide -ErrorAction SilentlyContinue) {
 if ((Get-Command fzf -ErrorAction SilentlyContinue) -and (Get-Module -ListAvailable PSFzf)) {
     Import-Module PSFzf
     Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -PSReadlineChordReverseHistory 'Ctrl+r'
+}
+
+# ---- Shell completions (tools that ship first-class PowerShell completion) --
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    try { gh completion -s powershell | Out-String | Invoke-Expression } catch { }
+}
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    try { (& uv generate-shell-completion powershell) | Out-String | Invoke-Expression } catch { }
 }
 
 # ---- Aliases & Functions (parity with shell/aliases.zsh) --------------------
@@ -2259,7 +2168,6 @@ Initialize-PackageManagers  # Scoop + Choco + gum
 Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Write-ZscalerEnvFile        # write env file with Windows-specific detection paths
 Invoke-ZscalerProfileSweep # sweep old Zscaler blocks from existing PS profiles
-Start-LogViewerWindow       # spawn the cyberwave-bordered live log window
 Resolve-InstallMode         # gum-based picker (now available)
 
 if ($Script:DoShell)     { Install-ShellExperience }
@@ -2301,10 +2209,7 @@ if ($Script:FailedTools.Count -gt 0) {
 }
 
 if ($Script:DoShell) {
-    Write-Host '  Next steps:' -ForegroundColor White
-    Write-Host '    1. Restart your terminal (or run: . $PROFILE)' -ForegroundColor DarkCyan
-    Write-Host '    2. Set Windows Terminal font to a Nerd Font (e.g. CaskaydiaCove NF)' -ForegroundColor DarkCyan
-    Write-Host '    3. Enjoy your new shell.' -ForegroundColor DarkCyan
+    Write-Host '  Tip: set Windows Terminal font to a Nerd Font (e.g. CaskaydiaCove NF)' -ForegroundColor DarkCyan
 }
 if ($Script:WslPresent -and -not $Script:DoShell) {
     Write-Host '  WSL tip: run install_linux.sh inside WSL for the full Zsh experience' -ForegroundColor DarkYellow
@@ -2313,3 +2218,40 @@ if ($Script:WslPresent -and -not $Script:DoShell) {
 Write-Host ''
 Write-Host "  Full log: $Script:LogFile" -ForegroundColor DarkGray
 Write-Host ''
+
+# -----------------------------------------------------------------------------
+# RELOAD-PROFILE NOTICE (last visible output -- impossible to miss)
+#
+# Windows users were hitting "I installed everything but pwsh still shows the
+# default prompt". Cause: the profile file was written but the running shell
+# wasn't reloaded. This loud notice fires LAST so it's the final thing on
+# screen, not buried above FailedTools / WSL tip / log path.
+#
+# TODO(v2): mirror this idiom in install.sh / install_linux.sh / install_macos.sh
+# so Mac/Linux users also get the same impossible-to-miss reload prompt.
+# -----------------------------------------------------------------------------
+if ($Script:DoShell) {
+    if (Test-Cmd gum) {
+        & gum style `
+            --border 'double' `
+            --border-foreground $Script:CW.Yellow `
+            --foreground $Script:CW.BrightWhite `
+            --padding '1 4' `
+            --margin '1 2' `
+            --align 'left' `
+            "[!]  PowerShell profile updated -- shell is NOT yet active in this window`n`n     Reload it to pick up the new prompt, aliases, and Zscaler env:`n`n         . `$PROFILE`n`n     Or just close this window and open a fresh terminal."
+    } else {
+        Write-Host '  +==============================================================================+' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |  [!]  PowerShell profile updated -- shell is NOT yet active in this window  |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |       Reload it to pick up the new prompt, aliases, and Zscaler env:        |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |         . $PROFILE                                                           |' -ForegroundColor White
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  |       Or just close this window and open a fresh terminal.                  |' -ForegroundColor Yellow
+        Write-Host '  |                                                                              |' -ForegroundColor Yellow
+        Write-Host '  +==============================================================================+' -ForegroundColor Yellow
+        Write-Host ''
+    }
+}
