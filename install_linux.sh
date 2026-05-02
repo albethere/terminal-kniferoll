@@ -903,7 +903,18 @@ check_sudo() {
     quip "Checking sudo access..."
     if ! sudo -v 2>/dev/null; then die "sudo authentication failed"; fi
     ok "sudo — cleared"
-    ( set +e; while sudo -n true 2>/dev/null; do sleep 50; done ) &
+    # set -E (errtrace, inherited from `set -Eeuo pipefail` at top) propagates
+    # the ERR trap into this backgrounded subshell. Clear it explicitly so
+    # signal-interrupted `sleep` calls during dpkg postinst don't trip a
+    # spurious "Unexpected failure at line N: sleep 50" warning.
+    (
+        trap - ERR
+        set +Ee
+        while sudo -n true 2>/dev/null; do
+            sleep 50 || break
+            kill -0 "$$" 2>/dev/null || break
+        done
+    ) &
     SUDO_KEEPALIVE_PID=$!
     trap 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null; true' EXIT
 }
