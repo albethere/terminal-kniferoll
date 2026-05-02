@@ -528,6 +528,107 @@ Each per-OS repo ships with `lib/` (and `managed-lib/` for managed) already vend
 
 ---
 
+## 5c. Tailscale capability
+
+Tailscale is the network substrate underneath cross-host fleet operations — Chef's Pi-from-phone use case (§5d) and the broader cybersecurity-engineer pattern of "I want to ssh / mosh / curl my home box from a coffee shop without poking holes in the firewall." v2 makes Tailscale a first-class capability: real install logic on every supported OS, a clean auth UX, opt-in by default.
+
+### 5c.1 v1 state — alias-only, no install
+
+A grep across `*.sh` and `*.ps1` in the v1 repo turns up exactly one Tailscale reference: `install_mac.sh:1145-1148` writes a shell alias to `~/.shell/aliases_mac.zsh`:
+
+```
+alias tailscale="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+```
+
+The alias is unconditional — written on every macOS install regardless of whether `Tailscale.app` exists. On a machine without the GUI app the alias resolves to a non-existent binary (harmless, just doesn't work). v1 does not install Tailscale on any platform; this stub alias is the entire surface. v2 removes it: the v2 install puts the `tailscale` binary on `PATH` directly, rendering the alias redundant.
+
+### 5c.2 Status: opt-in, off by default
+
+Tailscale is a TUI checkbox toggle in the **Network & remote access** category (new in v2; see §6b.1), defaulted OFF. Users who select it get the install path below; users who don't get nothing. Auto-enabling Tailscale is explicitly out of bounds.
+
+### 5c.3 Install paths per OS
+
+Every install path respects the §6.2 no-curl-pipe-bash rule. Tailscale's documentation defaults to a curl-pipe-bash install on Linux; v2 explicitly does not use that path even though Tailscale recommends it.
+
+| OS | Install command | Notes |
+|----|-----------------|-------|
+| macOS (workstation, default) | `brew install --cask tailscale` | Default for `kniferoll-mac` and `kniferoll-managed-mac`. Installs the GUI app + bundled CLI. |
+| macOS (headless) | `brew install tailscale` | Sub-toggle in the TUI when Tailscale is selected — for servers / headless setups that don't want the GUI. |
+| Windows | `winget install tailscale.tailscale` | Native winget package. |
+| Linux Debian/Ubuntu | apt repo, properly added: fetch `https://pkgs.tailscale.com/stable/<distro>/<codename>.noarmor.gpg` to `/etc/apt/keyrings/tailscale-archive-keyring.gpg`, write `/etc/apt/sources.list.d/tailscale.list` referencing it, `sudo apt update && sudo apt install tailscale`. The signing-key fingerprint is verified against `kniferoll-unpack/lib/keys/tailscale.fingerprint` (committed). |
+| Linux Arch | `sudo pacman -S tailscale` | In the `extra` repo; no AUR helper required. |
+| WSL2 Debian/Ubuntu | Same as native Debian/Ubuntu (apt repo path). The Tailscale daemon runs inside the WSL2 VM; the user authenticates there separately from any Windows-host Tailscale. The post-install summary spells out the dual-context implication. |
+
+### 5c.4 Auth UX flow
+
+When Tailscale is selected, after the package install completes the script runs:
+
+1. **Start the daemon.** `sudo systemctl enable --now tailscaled` on Linux/WSL2; `brew services start tailscale` on macOS headless; service auto-starts on Windows via the MSI. On macOS cask the GUI app manages its own daemon — the script just verifies the menu-bar app is present.
+2. **Print a clear banner.** `[!] Tailscale needs authentication. Press Enter to start, then open the URL printed below in your browser.`
+3. **Run `tailscale up`** (or `tailscale up --ssh` if the SSH sub-option was selected; see §5c.5) and capture the auth URL it prints.
+4. **Echo the URL prominently.** Box-bordered per `docs/FLAVOR.md`'s security-decision framing: `[!] AUTHENTICATE HERE: https://login.tailscale.com/a/<token>`.
+5. **Poll for authenticated state.** Run `tailscale status` every 5 seconds until the device shows authenticated, 5-minute timeout. On timeout: exit 5 (managed) or print "auth still pending — re-run `tailscale up` when ready" and continue (unmanaged).
+6. **Verify connectivity.** `tailscale ping <self-hostname>` to confirm tailnet reachability. Failure prints a remediation note ("check that your tailnet has at least one other node") but doesn't fail the install.
+
+### 5c.5 Sub-option: Tailscale SSH
+
+A nested TUI sub-checkbox under Tailscale, defaulted OFF: **"Enable Tailscale SSH (`tailscale up --ssh`) — lets other tailnet devices SSH in without managing keys."**
+
+This is a real security decision. Tailscale SSH means anyone on your tailnet with permission can SSH in subject to your tailnet ACLs (which default to "everyone-can-everyone" unless configured). Personal tailnet with only your own devices: convenience win. Shared or family tailnet: footgun. When the sub-option is selected, the TUI surfaces a one-line warning:
+
+```
+[!] Tailscale SSH lets any tailnet device with permission SSH in
+    without your traditional ssh keys. Verify your tailnet ACLs.
+```
+
+Selecting it adds `--ssh` to the `tailscale up` invocation in §5c.4 step 3. Default: OFF.
+
+### 5c.6 Posture awareness — managed scripts
+
+On the four `kniferoll-managed-*` repos, before installing Tailscale the TUI surfaces a warning banner:
+
+```
+[!] Tailscale creates an outbound tunnel that may violate your
+    corporate network policy. Verify with IT before proceeding.
+```
+
+Does *not* block — corporate users may legitimately use Tailscale (some orgs run headscale or self-host coordination). But the warning is loud, prints before the package install runs, and the user must confirm to proceed.
+
+A managed-script-specific override: when `kniferoll-corp.toml` (the §9 phase-6 corp-policy file) sets `tailscale.allowed = true` or `tailscale.allowed = false`, the generic warning is replaced with the corp's explicit position. Silent file → generic warning above.
+
+---
+
+## 5d. HA satellite stack (Pi-flavored)
+
+A new TUI category in v2 — Linux-only — for running Home Assistant satellite roles on a Pi (or any Linux box). The framing differs from earlier drafts of this section: Home Assistant runs on `hyp-pve-02` (one of two Proxmox nodes), and the Pi is a **satellite** to that brain, not a brain of its own. Roles supported in v2 ship music control, BLE proxying, Zigbee bridging, and voice-satellite endpoints; Frigate NVR and ESPresense are explicitly out-of-scope on Pi targets with documented alternatives.
+
+The full design — role catalog, install paths, idempotency contract, next-steps banner format, Pi-specific defensive defaults, multi-Pi-orchestration scope cut to v2.1+ — lives in **[`V2_PLAN_SATELLITE.md`](./V2_PLAN_SATELLITE.md)**. This section is a pointer; the satellite doc is the canonical specification.
+
+### 5d.1 Scope summary (final calls baked in)
+
+| Role | Status | Notes |
+|------|--------|-------|
+| **MPD media endpoint** | **DEFAULT-ON** | First-wave default. Direct media-control fit, lightweight, fast install. |
+| **Bluetooth Proxy (ESPHome)** | **DEFAULT-ON** | First-wave default. Cheap; extends HA's BLE reach to wherever the Pi physically lives. |
+| Zigbee2MQTT | AVAILABLE-OFF | Visible in TUI, defaulted unchecked. Requires Zigbee USB stick; preflight refuses if no stick is enumerated unless `--force-no-stick` is passed. |
+| Wyoming voice satellite | AVAILABLE-OFF | Visible in TUI, defaulted unchecked. Requires mic/speaker hardware decisions and HA Voice Assist setup downstream. |
+| Frigate NVR | OUT OF SCOPE on Pi | Pi 4 is a marginal fit; Coral USB mandatory; install footprint is heavy. Recommended host: `hyp-pve-02`. Future `kniferoll-proxmox` capability could ship it. |
+| ESPresense | OUT OF SCOPE on Pi | Wrong hardware target (ESP32, not Pi). Adjacent functionality via the §4.2 BT Proxy + HA's bermuda integration. |
+
+### 5d.2 Per-OS scope
+
+The HA satellite category appears only on `kniferoll-linux-deb`, `kniferoll-linux-arch`, and their managed twins. Mac and Windows machines are HA *clients* (Companion app via brew/winget, a different capability category) — they aren't satellite hardware in this fleet. WSL2 is also out (not a satellite host shape).
+
+### 5d.3 Multi-Pi orchestration — deferred to v2.1+
+
+v2.0 ships **one-machine-at-a-time** satellite installs. The user runs the unpack flow on each Pi separately. Multi-Pi orchestration (one machine triggers install across N Pis via Tailscale + SSH) adds substantial complexity — SSH key management, target inventory, partial-failure handling, transactional rollback semantics — for a cardinality Chef doesn't yet have. Designed against real fleet size when the second Pi enters the picture, not against "what if."
+
+### 5d.4 TUI gating
+
+The HA satellite category is enabled when at least one of the following holds: (a) Tailscale is selected in the same run or already installed and authenticated, or (b) the user passed `--ha-host LAN_HOST_OR_IP`. Otherwise the category's rows render dim/grey with `[needs tailscale or --ha-host]` and are non-selectable. The reasoning, role-by-role specs, and full implementation contract are in `V2_PLAN_SATELLITE.md`.
+
+---
+
 ## 6. Architectural principles
 
 The rewrite is governed by three values, in priority order: **simplicity, security, beauty**.
@@ -603,6 +704,8 @@ v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementat
 | Cloud CLIs | All on | awscli, azure-cli, gcloud, rclone. |
 | Nerd Fonts | All on | 14 families pinned at v3.4.0 per the §6.2 cooling-off and pinning rules. |
 | **AI tools** | **All off** | See §6b.7 for the canonical set and the rationale for default-off. |
+| **Network & remote access** | **All off** | Tailscale (§5c). Off by default. |
+| **HA satellite roles (Linux only)** | MPD + BT Proxy ON; Z2M + Wyoming OFF | Linux-only category. First-wave default-on: MPD, ESPHome BT Proxy. Available-off (opt-in): Zigbee2MQTT, Wyoming voice satellite. Out of scope on Pi: Frigate, ESPresense. Gated on Tailscale being selected OR `--ha-host` passed. Full spec in [`V2_PLAN_SATELLITE.md`](./V2_PLAN_SATELLITE.md). |
 | Desktop apps (macOS only) | All on | iTerm2, Keka. |
 
 The AI category is the one departure from "all on by default." Every tool in it ships unselected; the user opts into the specific tools they want. See §6b.7.
@@ -906,7 +1009,7 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 ## 9. Open questions
 
-None blocking phase 1. Everything is resolved (see below) or scoped to a later phase boundary.
+None blocking phase 1. The earlier "remote-control trajectory" question has been answered by Chef and moved to Resolved (§5d / `V2_PLAN_SATELLITE.md`).
 
 **Pending UX-primitive decisions (not blocking phase 1, but they crystallize §6b.3):** Spectre.Console vs pure-PowerShell on Windows; whether macOS migrates from pure-bash to gum for single-engine parity across the four POSIX targets. Tracked in §6b.9. The decisions affect rendering, not the cross-OS contract — so phase 1's skeleton work proceeds on the §6b.3 provisional picks, and a future PR rewrites the affected rows when Chef calls.
 
@@ -929,6 +1032,8 @@ None blocking phase 1. Everything is resolved (see below) or scoped to a later p
 - **Deferred-replacement pattern.** Deprecated tools are not yanked from existing v1 installs at v2.0; v2.0 stops shipping them on fresh installs, and follow-up `--migrate-<tool>` flags handle the swap explicitly. First worked example: `speedtest-cli` → Ookla's official `speedtest` (§3.5.1). The pattern is a §6.2 security manifesto principle that carries forward to every future deprecation.
 - **TUI tool descriptions.** Every tool in the inventory ships with a ≤ 60-char description that renders in the TUI next to the tool name. CI-lint enforces the length cap so descriptions never wrap on 80-col terminals. Descriptions are committed in the inventory files (`kniferoll-unpack/lib/inventory/<category>.sh`), versioned with the tool, and reviewed at the same quarterly cadence as the tool itself. (§6b.1, §6b.7)
 - **Side-by-side live log display.** v1 feature confirmed working on Linux; mechanism verified by reading `lib/split_terminal.sh` (pure POSIX bash, in-terminal Unicode box via `tput cup`, background `tail -f` subshell — *not* tmux). v2 sources the same lib in `kniferoll-mac` and `kniferoll-managed-mac` (one-line port; Mac currently doesn't have it). Windows v2 implements parity via `wt.exe split-pane` in the existing Windows Terminal window — replacing v1's broken `wt.exe -w new new-tab` separate-window approach that was removed in `hotfix/stabilize-cut`. WSL2 inherits the Linux mechanism unchanged. Hard cross-OS parity requirement, not aspirational. See §6b.8.
+- **Tailscale capability.** First-class in v2, off by default, opt-in via the new "Network & remote access" TUI category. v1 had only an unconditional shell alias on macOS (`install_mac.sh:1145-1148`) and no actual install logic anywhere — v2 fixes that. Per-OS install paths spec'd in §5c; auth UX, Tailscale SSH sub-option, managed-posture warning all documented. apt repo install path is the proper-keyring form, not curl-pipe-bash, even though Tailscale's docs default to the latter.
+- **HA satellite stack (Pi-flavored).** Linux-only TUI category with first-wave defaults MPD + ESPHome BT Proxy (default-on); Z2M + Wyoming available-off; Frigate + ESPresense out-of-scope on Pi with documented alternatives; multi-Pi orchestration deferred to v2.1+. Frames the Pi as a satellite to HA-on-`hyp-pve-02`, not as a control plane. Full role catalog, install paths, idempotency contract, next-steps banner, Pi-specific defensive defaults (log2ram, USB power note, swap-off) in `V2_PLAN_SATELLITE.md`. Pointer in §5d.
 - **Project identity.** AI / cybersecurity engineer's working toolkit, designed to evolve. Stated in the §Context "What this project is for" paragraph and in the §8.1 niche.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
