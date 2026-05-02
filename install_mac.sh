@@ -570,10 +570,13 @@ build_tui_selector() {
 }
 
 run_tui_selector() {
-    local output
+    local output key val
     output="$("$TUI_SELECTOR" --mac)"
     while IFS='=' read -r key val; do
-        [[ -n "$key" ]] && declare -g "$key"="$val"
+        # Portable: eval `KEY=$val` runs in caller scope, sets a global
+        # (assignment context, no word-splitting). Avoids `declare -g` which
+        # is bash 4+ — macOS /bin/bash is 3.2.
+        [[ -n "$key" ]] && eval "$key=\$val"
     done <<< "$output"
 }
 
