@@ -1834,6 +1834,14 @@ if ((Get-Command fzf -ErrorAction SilentlyContinue) -and (Get-Module -ListAvaila
     Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -PSReadlineChordReverseHistory 'Ctrl+r'
 }
 
+# ---- Shell completions (tools that ship first-class PowerShell completion) --
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    try { gh completion -s powershell | Out-String | Invoke-Expression } catch { }
+}
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    try { (& uv generate-shell-completion powershell) | Out-String | Invoke-Expression } catch { }
+}
+
 # ---- Aliases & Functions (parity with shell/aliases.zsh) --------------------
 
 # ls strategy: lsd preferred (icons, color, git status)
