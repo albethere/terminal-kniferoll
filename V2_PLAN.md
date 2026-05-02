@@ -10,6 +10,8 @@ This document proposes a complete from-scratch rewrite. The rewrite splits the p
 
 The v1 scripts and their hard-won knowledge are not being thrown away. They are being read as a specification. Every bug they fixed is a constraint v2 must respect; every workaround they encode is a piece of evidence about the world. The redesign's job is to preserve every meaningful behavior while shedding the structural weight that made each new behavior cost more than it should.
 
+**What this project is for.** v2 is the working toolkit of an AI / cybersecurity engineer who moves between personal and corporate machines. It is *meant* to evolve. The tool inventory is alive — what gets installed today should reflect the best-in-class, most-elegant, most-secure tools as of today. Every quarter, the inventory is reviewed against that standard; tools that have drifted are replaced or dropped (§6.2). The plan's structure — flat names, per-tool granularity in the TUI, the 7-day cooling-off period before any version bump lands, the deep-dive pedagogy — exists to support that constant-re-evaluation cadence without making each iteration a heavy lift.
+
 ---
 
 ## 1. Inventory of current behavior
@@ -514,6 +516,7 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **Pinned versions and pinned checksums for every download.** No "latest." Bumping a version is an explicit PR with an updated checksum line. The Nerd Fonts soft-warn-and-continue pattern at `install_mac.sh:1369-1384` becomes a hard-fail.
 - **Cooling-off period: 7 days from upstream release.** When pinning a new version of any tool, font, or cargo crate, maintainers wait at least 7 days from the upstream release date before merging the bump PR. Most supply-chain attacks (yanked malicious packages, compromised maintainer accounts, registry takeovers) get caught within hours-to-days; a 7-day floor lets the community immune system do its work before kniferoll's CI starts feeding compromised artifacts to users. The pinned-version table records `released_at` ISO date alongside each version string; CI on bump PRs verifies `today - released_at >= 7 days` and fails otherwise. Emergency security bumps (CVEs, urgent patches) override via `--allow-fresh` with a documented reason in the PR body.
 - **Lean dependency surface.** Every tool in the default inventory earns its slot. The projector stack (weathr, trippy, the animation runtime) lives in `silo-agent/kniferoll-projector` and is opt-in via `--projector` — none of it lands in a per-OS repo's default install. If a tool is "nice to have" but not load-bearing for the shell experience, it goes in an opt-in flag, not the default. Smaller default inventory means fewer pinned versions to track, fewer CVE windows, fewer cooling-off-period bumps to coordinate.
+- **Quarterly inventory review.** The default tool inventory is reviewed quarterly against three questions: still best-in-class? still actively maintained, with a healthy upstream? still the most secure / least-attack-surface choice for its slot? Tools that fail any of the three are replaced or dropped in the next release. The review is recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md` listing tools held / added / removed and the rationale for each change. This is the project's structural answer to "the toolkit must evolve" — cadence-driven, transparent, and auditable. The AI category (§6b.7) is the most active beneficiary of this review since AI tools evolve faster than anything else, but the cadence applies to every category.
 - **Refuse to run as root unless explicitly invoked with `--root` and a documented reason.** The v1 scripts require sudo for individual operations (`sudo apt`, etc.) and that pattern continues — but the script itself runs as the user, never as root. `--root` is reserved for VM-bootstrap or container-image-build scenarios where there is no user yet.
 - **Explicit handling of corp TLS interception in managed scripts only.** Managed scripts take a CA bundle path via `--ca-bundle` flag or `KR_CA_BUNDLE` env var (with auto-detection as fallback) and propagate it to: `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `PIP_CERT`, `CARGO_HTTP_CAINFO` (Windows), `HOMEBREW_CURLOPT_CACERT` (macOS). Unmanaged scripts have no concept of a corp CA and refuse to read these env vars even if set — managed work belongs in managed scripts.
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
@@ -547,24 +550,31 @@ v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementat
 
 **Top-level menu (single select).**
 
-1. Full install
-2. Shell only
-3. Projector only
-4. Custom
+1. Full install — every category at its default state (most categories all-on; AI tools all-off; see below).
+2. Shell only — just the Shell environment category.
+3. Custom — drill into per-tool selection.
 
-**Custom sub-categories (multi-select).**
+(v1's "Projector only" preset is gone — projector is its own opt-in repo per §9 resolved. Users who want only the projector clone `silo-agent/kniferoll-projector` directly.)
 
-1. Shell environment (Zsh / PowerShell, plugins, dotfiles)
-2. AI Tools (gemini-cli, Anthropic Claude — pending §9 OQ#3)
-3. Developer Tools (bat, fzf, jq, ripgrep, lsd, micro, tmux, starship, btop, language toolchains)
-4. Package Managers (npm, yarn, pipx, uv, rustup)
-5. Security Tools (1Password CLI, nmap, openssl, yara, wtfis, ngrep, wireshark)
-6. Cloud / CLI (AWS CLI, rclone)
-7. Nerd Fonts (13 families pinned at v3.4.0)
-8. Projector Stack (weathr, trippy, animation runtime)
-9. Desktop Apps (macOS only: iTerm2, Keka)
+**Custom mode: per-tool selection.** Custom is a flat multi-select list grouped by category headers. Every tool in the inventory is individually selectable; categories are visual section headers, not single-toggle buckets. The reason for per-tool granularity: the inventory is dense (50+ tools across the categories below) and a one-click "install all of category X" is rarely what an experienced user wants — they want `claude-code` but not `aider`, `ripgrep` but not `micro`, `gum` but not `lolcat`. Forcing category-level toggles flattens that intent.
 
-**State flow.** Top-level is single-select. Custom is multi-select. First-run defaults: all sub-categories checked (the v1 default and the safe fallback when anything goes sideways). Subsequent runs read prior selections from `state.json` and present those as defaults.
+**Categories and default state.**
+
+| Category | Default | Notes |
+|----------|---------|-------|
+| Shell environment | All on | Zsh / PowerShell, Oh-My-Zsh / Oh-My-Posh, starship, zsh-autosuggestions, fast-syntax-highlighting, zoxide, fzf, tmux, yazi, nushell. |
+| Developer tools | All on | bat, ripgrep, jq, lsd, micro, btop, hexyl, gh, gum, exiftool, fastfetch, sqlite, tealdeer, lolcat, cmatrix, cbonsai. |
+| Language toolchains | All on | go, python, ruby, node, openjdk, lua, rustup. |
+| Package managers | All on | npm, yarn, pipx, uv. |
+| Security tools | All on | 1Password CLI, nmap, openssl, yara, ngrep, wireshark, wtfis, tcpdump. |
+| Cloud CLIs | All on | awscli, azure-cli, gcloud, rclone. |
+| Nerd Fonts | All on | 13 families pinned at v3.4.0 per the §6.2 cooling-off and pinning rules. |
+| **AI tools** | **All off** | See §6b.7 for the canonical set and the rationale for default-off. |
+| Desktop apps (macOS only) | All on | iTerm2, Keka. |
+
+The AI category is the one departure from "all on by default." Every tool in it ships unselected; the user opts into the specific tools they want. See §6b.7.
+
+**State flow.** Top-level is single-select. Custom is multi-select. First-run defaults follow the table above (all categories on except AI, which is all-off). Subsequent runs read prior per-tool selections from `state.json` and present those as defaults.
 
 **Visual affordances (floor every implementation must clear).** A banner identifying script + posture + OS, a divider, a cursor glyph on the focused row, multi-select checkboxes that distinguish by both glyph and color (`[✓]` / `[ ]`), and a bottom help bar listing the keys in plain text: `SPACE toggle · ENTER confirm · a toggle all · q abort`. Cyberwave palette where color is supported. Alt-screen rendering where the platform supports it, so the menu leaves scrollback unchanged on exit.
 
@@ -572,32 +582,36 @@ v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementat
 
 **One change from v1.** Aborting in v1's Bubbletea silently defaulted to "install everything" (`tui/selector/main.go:379-382`). v2 considers that a footgun: aborting exits non-zero with `selection aborted; nothing installed`, and the user re-runs. Quiet success on abort is worse than loud failure.
 
-**Output contract.** The TUI emits `KEY=true|false` lines on stdout, one per sub-category, in a stable order. The install script captures stdout and sources the lines as shell variables (bash) or a hash-table (PowerShell). This seam — between the TUI and the rest of the script — is identical across all four OSes and must not vary.
+**Output contract.** The TUI emits `KEY=true|false` lines on stdout, one per *tool* (not per category), in a stable order. Keys use dot-notation: `<category>.<tool>` — e.g., `dev.bat=true`, `ai.claude_code=true`, `ai.aider=false`. The install script captures stdout and sources the lines as shell variables (bash) or a hash-table (PowerShell). This seam — between the TUI and the rest of the script — is identical across all five OS targets and must not vary.
 
 ### 6b.2 State persistence
 
-Every run writes the user's confirmed selection to `~/.kniferoll/state.json` on Unix, `%APPDATA%\kniferoll\state.json` on Windows. Format:
+Every run writes the user's confirmed selection to `~/.kniferoll/state.json` on Unix, `%APPDATA%\kniferoll\state.json` on Windows. The schema records per-tool selections under dot-notation keys:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "last_run_iso": "2026-05-02T14:30:00Z",
   "preset": "custom",
   "selections": {
-    "shell_env": true,
-    "ai_tools": false,
-    "dev_tools": true,
-    "pkg_mgrs": true,
-    "security": false,
-    "cloud_cli": true,
-    "fonts": true,
-    "projector": false,
-    "desktop_apps": true
+    "shell.zsh": true,
+    "shell.oh_my_zsh": true,
+    "shell.starship": true,
+    "dev.bat": true,
+    "dev.ripgrep": true,
+    "dev.lolcat": false,
+    "lang.rustup": true,
+    "lang.openjdk": false,
+    "ai.claude_code": true,
+    "ai.gemini_cli": false,
+    "ai.aider": true,
+    "fonts.iosevka": true,
+    "fonts.jetbrainsmono": true
   }
 }
 ```
 
-On subsequent runs the TUI reads `state.json` and presents saved selections as defaults. First run (no file) falls back to all-checked.
+On subsequent runs the TUI reads `state.json` and presents saved per-tool selections as defaults. First run (no file) falls back to the §6b.1 default table (most categories all-on, AI all-off). A pre-existing schema-1 file (from an earlier draft of this plan with category-level toggles) is read tolerantly: each category-level boolean expands into its constituent per-tool defaults at the time of the first read, then the schema is bumped to 2 on save.
 
 `--non-interactive` bypasses the TUI entirely and runs with last-saved selections. If no `state.json` exists, `--non-interactive` runs the conservative "Full install" preset (matching v1 batch-mode behavior). This flag is the ergonomic answer to CI usage *and* to re-running after a partial failure — the user fixes the cause, runs `install.sh --non-interactive`, and gets exactly the same selections they confirmed last time.
 
@@ -610,6 +624,8 @@ On subsequent runs the TUI reads `state.json` and presents saved selections as d
 A bash-only TUI using ANSI escapes and `read -rsn1` for keystroke handling. Pure bash hits the §6.1 "no Go binary as a hard dependency" mandate and drops the Bubbletea binary. The TUI is ~250 lines, ships in `lib/tui.sh`, no external deps.
 
 The catch: macOS Apple Silicon ships with bash 3.2, which lacks associative arrays and `mapfile` — both of which the TUI uses. `install.sh`'s preamble checks `BASH_VERSION`, locates a brewed bash 4+ at `/opt/homebrew/bin/bash` or `/usr/local/bin/bash`, and re-execs itself under it. If neither exists, the script falls back to sequential yes/no prompts (the v1 `show_custom_menu` pattern). The README documents this: "macOS ships with bash 3.2; we use a brewed bash for the TUI and re-exec automatically — if Homebrew isn't installed yet, the script bootstraps it before the TUI runs."
+
+Each implementation handles the per-tool / per-category grouping per its native idiom: macOS pure-bash uses ANSI section headers between toggleable rows (the cursor skips the header rows); gum prefixes tool names with their category tag (e.g., `ai/claude-code`) or uses one `gum choose --no-limit` invocation per category and aggregates; whiptail's `--checklist` does the same tag-prefix; `Out-GridView` exposes a `Category` column the user can sort on. Aesthetic varies; the per-tool granularity contract holds.
 
 **Linux Debian/Ubuntu (`kniferoll-linux-deb` / `kniferoll-managed-linux-deb`) — gum primary, whiptail fallback.**
 
@@ -639,7 +655,7 @@ Fallback: a `Read-Host`-based menu that renders categories with numbered toggles
 
 ### 6b.4 Managed-posture surfacing
 
-Managed scripts run an additional layer in the TUI. Before any sub-category list is shown, the menu surfaces the corp-CA preflight result:
+Managed scripts run an additional layer in the TUI. Before the per-tool list is shown, the menu surfaces the corp-CA preflight result:
 
 ```
 [CORP-CA]  OK  Detected: /etc/ssl/certs/corp.pem  (loaded)
@@ -659,7 +675,7 @@ If the user tries to confirm with greyed items still selected, the script return
 ### 6b.5 Cross-cutting principles
 
 - **Keyboard-only.** Every implementation must work without a mouse. macOS, Linux gum/whiptail, and Windows `Read-Host` are keyboard-native; Windows `Out-GridView` is mouse-friendly but also fully keyboardable (Tab, arrows, Space, Enter).
-- **Sane defaults on first run.** All sub-categories checked. Matches v1.
+- **Sane defaults on first run.** All categories check their member tools by default *except* AI, which is all-off (§6b.7). Matches v1's "install everything" intent for the bulk of the inventory while respecting the AI-tools-are-individually-opt-in design.
 - **Previous selections remembered.** `~/.kniferoll/state.json` (or platform equivalent) is the source. Written on confirm; read on every subsequent run.
 - **Dry-run shows would-select without prompting.** `--dry-run` reads `state.json` and prints; never opens a TUI.
 - **`--non-interactive` skips the TUI entirely.** Uses last-saved selections; falls back to "Full install" if none. Designed for CI and for resuming after a partial failure.
@@ -667,13 +683,36 @@ If the user tries to confirm with greyed items still selected, the script return
 
 ### 6b.6 Honest divergence
 
-The contract — categories, output format, state file, keyboard intent (toggle / confirm / abort / toggle-all) — is identical across the four OSes. What necessarily diverges:
+The contract — categories, output format, state file, keyboard intent (toggle / confirm / abort / toggle-all) — is identical across the five OS targets. What necessarily diverges:
 
-- **Visual style.** macOS pure-bash ANSI ≈ Linux gum (both lipgloss-flavored when gum is present) ≈ macOS-Bubbletea-v1 in look and feel. Windows `Out-GridView` is a grid widget, not an ANSI list, and looks Windows-y. Pretending the four are byte-identical would be worse than letting each platform look like itself.
-- **Bash-version requirements.** macOS re-execs to bash 4+ under Homebrew. Linux uses bash 4+ natively (every supported distro ships it). Windows is PowerShell 7+. Each per-OS README documents the version requirement and the fallback chain.
-- **Fallback chains.** macOS: pure-bash TUI → sequential yes/no (when no brewed bash). Linux: gum → whiptail → sequential. Windows: `Out-GridView` → `Read-Host`. Documented per-script.
+- **Visual style.** macOS pure-bash ANSI ≈ Linux gum (both lipgloss-flavored when gum is present) ≈ macOS-Bubbletea-v1 in look and feel. Windows `Out-GridView` is a grid widget, not an ANSI list, and looks Windows-y. Pretending the five are byte-identical would be worse than letting each platform look like itself.
+- **Bash-version requirements.** macOS re-execs to bash 4+ under Homebrew. Linux (native and WSL2) uses bash 4+ natively. Windows is PowerShell 7+. Each per-OS README documents the version requirement and the fallback chain.
+- **Fallback chains.** macOS: pure-bash TUI → sequential yes/no (when no brewed bash). Linux and WSL2: gum → whiptail → sequential. Windows: `Out-GridView` → `Read-Host`. Documented per-script.
 
 These divergences are intentional and called out in the docs. Uniformity-by-pretense would be worse than uniformity-by-contract.
+
+### 6b.7 AI tools category — off by default
+
+The AI category is its own section because the tools in it evolve faster than anything else in the project, the licensing/auth/cost stories vary widely, and most users want to opt into specific ones rather than receive the full set. Defaulting the whole category off — every individual tool unselected on first run — respects that. A user who wants `claude-code` enables it; the rest stay off until they're explicitly chosen. This is the one category where v2 deliberately diverges from "all on by default."
+
+**Canonical AI inventory (every tool off by default; cross-platform unless noted):**
+
+| Tool | What it is | Notes |
+|------|------------|-------|
+| `claude-code` | Anthropic Claude Code CLI | Installed via the official npm package or platform-native installer. |
+| `gemini-cli` | Google Gemini CLI | Currently brew/npm; cross-platform. |
+| `codex-cli` | OpenAI Codex CLI (`@openai/codex`) | npm-installed. Verify the latest official package name at install time — it has changed once. |
+| `copilot-cli` | GitHub Copilot CLI as a `gh` extension (`gh extension install github/gh-copilot`) | Requires `gh` (already in the dev-tools default). The standalone `copilot-cli` predecessor is dead. |
+| `aider` | aider-chat: AI pair-programming CLI (Python) | Installed via pipx. Multi-provider. |
+| `langchain-cli` | LangChain framework CLI for project scaffolding | Note: LangChain proper is a Python library; this entry is the project-scaffolding CLI. Users who want the library install it directly via pip. |
+| `llm` | Simon Willison's `llm` CLI | Lightweight, multi-provider, plugin ecosystem. The "Unix philosophy of LLM CLIs." |
+| `ollama` | Local LLM runtime CLI | For offline / private-data work. Especially relevant in security/detection-engineering contexts where prompt content shouldn't leave the host. |
+| `mods` | charmbracelet `mods` CLI for piping content to LLMs | TUI-pretty, fits the kniferoll aesthetic. Multi-provider. |
+| `fabric` | Daniel Miessler's `fabric` prompt framework | Security-focused prompt collection; directly relevant to detection-engineering work. |
+| `goose` | Block's open-source agent framework with CLI | Recent and well-maintained. Useful for AI-driven detection eng. |
+| `aichat` | Multi-provider chat CLI (Rust) | Fast, lightweight alternative to `llm`. |
+
+This list is not closed. The §6.2 cooling-off period (7 days from upstream release before any pin lands) and the §6.2 quarterly inventory review cadence apply to AI tools the same as to every other category. Tools that drift from "best-in-class, most-elegant, most-secure" are replaced or dropped; new ones that emerge between reviews can be added with a §6.2-compliant version pin and a deep dive (§11) explaining why they earned a slot. The pattern: the inventory file in `kniferoll-unpack/lib/inventory/ai.sh` is the source of truth; the table above is a snapshot of the v2.0-launch state.
 
 ---
 
@@ -758,7 +797,7 @@ Eleven projects in the adjacent space. For each: what it does, where it beats kn
 
 ### 8.1 Where kniferoll v2 fits
 
-kniferoll v2's niche is **opinionated, multi-OS, corp-CA-aware, beautiful, single-step terminal-environment setup for security/dev/SRE practitioners who work across personal and corporate machines**. The five-target × two-posture matrix is the differentiator: no other tool in this list cleanly handles "I have a personal MacBook, a work Windows laptop with Zscaler, an Ubuntu desktop at home, a corp WSL2 environment for daily work, and a Raspberry Pi 4 in my closet" with matched-quality first-class scripts for each.
+kniferoll v2's niche is **the working toolkit of an AI / cybersecurity engineer who moves between personal and corporate machines**: opinionated, multi-OS, corp-CA-aware, beautiful, with a per-tool inventory that's individually selectable and reviewed quarterly against best-in-class. The five-target × two-posture matrix is the differentiator: no other tool in this list cleanly handles "I have a personal MacBook, a work Windows laptop with Zscaler, an Ubuntu desktop at home, a corp WSL2 environment for daily work, and a Raspberry Pi 4 in my closet" with matched-quality first-class scripts for each — and none of them treats the AI tooling slot as a first-class evolving category.
 
 The realistic user is someone who:
 - works in security or backend dev or SRE,
@@ -776,9 +815,7 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 ## 9. Open questions
 
-One remains. Everything else is resolved (see below) or scoped to a phase boundary.
-
-1. **Inventory bumps from v1 to v2.** Anthropic Claude CLI (winget-only in v1 — cross-platform in v2?), the AI-CLI bucket as a whole (gemini-cli, claude — first-class category, opt-in module, or out?). The `gum` part of this question is implicitly resolved by §6b's TUI recommendation (gum is in-scope on Linux as the TUI primary; whether it's *also* a user-facing tool is a separate inventory call). Needs an answer before phase 6.
+None blocking phase 1. Everything is resolved (see below) or scoped to a later phase boundary.
 
 **Phase-6 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 6.
 
@@ -793,6 +830,10 @@ One remains. Everything else is resolved (see below) or scoped to a phase bounda
 - **Posture isolation.** Strict one-way dependency: public never reads private, private subtrees public, never the reverse. CI grep-fails any `managed-unpack` reference in `kniferoll-unpack`. (§5b.3)
 - **Account shape.** Personal account today, possibly org later. Per-collaborator grants today; team grants on org conversion.
 - **TUI selector.** Per-OS in-script implementation; behavior matches the macOS contract documented in §6b. WSL2 inherits the Linux-Debian implementation. Not a separate repo, not a separate binary.
+- **Tool selection model.** Per-tool granularity, not per-category. Every tool in the inventory is individually selectable in Custom mode. Categories are visual section headers, not single-toggle buckets. (§6b.1)
+- **AI tools default state.** Off by default — every individual AI tool ships unselected. The user opts into specific tools. The canonical AI inventory at v2.0 launch is in §6b.7 (claude-code, gemini-cli, codex-cli, copilot-cli, aider, langchain-cli, llm, ollama, mods, fabric, goose, aichat); the list is reviewed quarterly per the §6.2 cadence.
+- **Inventory cadence.** Quarterly review against three questions (best-in-class? actively maintained? most secure choice for its slot?). Recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md`. (§6.2)
+- **Project identity.** AI / cybersecurity engineer's working toolkit, designed to evolve. Stated in the §Context "What this project is for" paragraph and in the §8.1 niche.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
 - **Cooling-off period.** 7 days from upstream release before any version pin lands. CI-enforced. Emergency override via `--allow-fresh` with documented reason. (§6.2)
@@ -812,7 +853,7 @@ Sequenced by what unlocks the most learning fastest, not by OS.
 
 **Phase 1 — Skeleton.** `kniferoll-unpack` gets its initial structure: stubbed `unpack` dispatcher, `lib/` skeleton (download-and-verify, log format, exit-code helpers, manifest writer, `SKELETON.md`, `PEDAGOGY.md`), `docs/` with `ARCHITECTURE.md` + `FLAVOR.md` first drafts. Tag `kniferoll-unpack@v0.1.0`. Each of the five unmanaged per-OS repos (`kniferoll-mac`, `-windows`, `-linux-deb`, `-linux-arch`, `-wsl2`) commits its `install.sh` / `install.ps1` skeleton (header, preflight, mode flags, exit codes, log format — no install logic yet) and runs `make sync-core` to subtree the v0.1.0 lib. `kniferoll-projector` gets its own minimal scaffold: README pointing at its purpose as opt-in, an empty `install.sh` stub. Goal: a user can clone any unmanaged per-OS repo, run `./install.sh --dry-run`, and see the skeleton produce empty output. The unpack dispatcher's OS detection works end-to-end for the unmanaged path.
 
-**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force` + `--non-interactive`. The TUI selector ships in this phase as the reference contract for the others (per §6b). The WSL2-detection-and-refuse preflight ships here too, suggesting `kniferoll-wsl2` to anyone who runs `kniferoll-linux-deb` inside WSL. Every later script is a diff against this. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0`.
+**Phase 2 — First slice: `kniferoll-linux-deb`.** Implement end-to-end. apt + cargo + curated GitHub releases + Zsh setup + dotfile rendering + manifest + `--dry-run` + `--check` + `--force` + `--non-interactive`. The TUI ships in this phase as the reference contract for the others (per §6b), with per-tool granularity in Custom mode and the AI category default-off (per §6b.7) wired up from day one. The WSL2-detection-and-refuse preflight ships here too, suggesting `kniferoll-wsl2` to anyone who runs `kniferoll-linux-deb` inside WSL. Every later script is a diff against this. First because: (a) Debian/Ubuntu is the highest-volume target, (b) apt is the most predictable package manager, (c) the v1 Linux script is canonical and best-tested. Cut `kniferoll-linux-deb@v1.0.0`.
 
 **Phase 3 — Same hand, new arch: `kniferoll-linux-arch`.** pacman + AUR helper detection. The shared inventory data structure is exercised across two distros for the first time; this stresses the "tools are inline data" principle. Bugs found here are reflected back into `kniferoll-unpack/lib/` (and bumped on each consumer via `make sync-core`).
 
@@ -881,8 +922,8 @@ Building deep dives into the project rhythm from day one is cheaper than retrofi
 
 Plan-level verification before any code is written:
 
-- Resolve the one remaining open question in §9 (inventory bumps).
 - Run the §5.1 command block to create the five new repos and grant `albethere` admin.
+- Confirm the §6b.7 canonical AI inventory at v2.0 launch (or edit it).
 
 Code-level verification per phase:
 
