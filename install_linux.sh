@@ -900,9 +900,19 @@ cleanup_removed_tools() {
 
 # ── Feature: sudo keepalive ───────────────────────────────────────────────────
 check_sudo() {
-    quip "Checking sudo access..."
-    if ! sudo -v 2>/dev/null; then die "sudo authentication failed"; fi
-    ok "sudo — cleared"
+    if ! [ -t 0 ]; then
+        # Non-interactive: must be pre-authenticated or running as root
+        if ! sudo -n true 2>/dev/null; then
+            die "non-interactive run but sudo not pre-authenticated; run \`sudo -v\` first or rerun with a TTY"
+        fi
+        ok "sudo — pre-authenticated (non-interactive)"
+    else
+        banner "SUDO REQUIRED"
+        echo -e "${YELLOW}${BOLD}  [!] This installer needs sudo. Enter your password when prompted.${RESET}"
+        echo -e "${DIM}      (credential cached for the rest of the run)${RESET}"
+        if ! sudo -v; then die "sudo authentication failed"; fi
+        ok "sudo — cleared"
+    fi
     # set -E (errtrace, inherited from `set -Eeuo pipefail` at top) propagates
     # the ERR trap into this backgrounded subshell. Clear it explicitly so
     # signal-interrupted `sleep` calls during dpkg postinst don't trip a
@@ -1447,20 +1457,23 @@ if [[ "$EXPLICIT_FLAG" == "false" ]] && { [[ -t 0 ]] || [[ "$MODE" == "interacti
     show_menu
 fi
 
-# ── Initialise split-terminal UI (tk-022) ────────────────────────────────────
-# Draws right-panel box and starts background verbose renderer.
-# Falls back silently if terminal is too narrow or non-interactive.
-st_init
-
 # ── Resolve deployment flags ──────────────────────────────────────────────────
 DO_CORE=true
 DO_SHELL="$INSTALL_SHELL"
 DO_PROJECTOR="$INSTALL_PROJECTOR"
 
-info "Supply chain: strict (TLS enforced, hashes verified where available)"
-
-# ── sudo keepalive (non-root only) ────────────────────────────────────────────
+# ── sudo keepalive (non-root only) — FIRST interactive step ───────────────────
+# Prompt for sudo before any UI is drawn so the password prompt is the first
+# user-visible interaction, not a surprise mid-run hidden behind a banner or
+# the split-terminal box.
 [[ "$EUID" -ne 0 ]] && check_sudo
+
+# ── Initialise split-terminal UI (tk-022) ────────────────────────────────────
+# Draws right-panel box and starts background verbose renderer.
+# Falls back silently if terminal is too narrow or non-interactive.
+st_init
+
+info "Supply chain: strict (TLS enforced, hashes verified where available)"
 
 # ── TLS preflight + Zscaler trust (hard gate) ────────────────────────────────
 # Proceeding with a broken TLS stack would silently corrupt every download.
