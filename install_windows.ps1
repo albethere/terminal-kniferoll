@@ -1935,6 +1935,13 @@ if ((Get-Command fzf -ErrorAction SilentlyContinue) -and (Get-Module -ListAvaila
 
 # ---- Aliases & Functions (parity with shell/aliases.zsh) --------------------
 
+# BEGIN terminal-kniferoll lolcat-alias -- DO NOT EDIT (managed by installer)
+if ((Get-Command lolcrab -ErrorAction SilentlyContinue) -and `
+    -not (Get-Command lolcat -ErrorAction SilentlyContinue)) {
+    Set-Alias -Name lolcat -Value lolcrab -Scope Global
+}
+# END terminal-kniferoll lolcat-alias
+
 # ls strategy: lsd preferred (icons, color, git status)
 if (Get-Command lsd -ErrorAction SilentlyContinue) {
     Remove-Item Alias:ls -Force -ErrorAction SilentlyContinue
@@ -1969,10 +1976,15 @@ function myip { (Invoke-WebRequest -Uri 'https://icanhazip.com' -UseBasicParsing
 
 # Shell management
 function reload { . $PROFILE; Write-Host 'Profile reloaded.' -ForegroundColor Cyan }
-function ff {
-    if (Get-Command fastfetch -ErrorAction SilentlyContinue) { fastfetch }
-    else { Write-Host 'fastfetch not installed.' -ForegroundColor Yellow }
+
+# BEGIN terminal-kniferoll ff-alias -- DO NOT EDIT (managed by installer)
+if ((Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
+    (Get-Command lolcrab -ErrorAction SilentlyContinue)) {
+    function ff { fastfetch | lolcrab }
+} elseif (Get-Command fastfetch -ErrorAction SilentlyContinue) {
+    function ff { fastfetch }
 }
+# END terminal-kniferoll ff-alias
 
 # Navigation
 function ..   { Set-Location .. }
@@ -2036,7 +2048,25 @@ if ($env:PRIVATE_GREYNOISE_API_KEY) { $env:GREYNOISE_API_KEY = $env:PRIVATE_GREY
 if ($env:PRIVATE_ABUSEIPDB_API_KEY) { $env:ABUSEIPDB_API_KEY = $env:PRIVATE_ABUSEIPDB_API_KEY }
 
 # ---- Welcome ----------------------------------------------------------------
-if (Get-Command fastfetch -ErrorAction SilentlyContinue) { fastfetch }
+# BEGIN terminal-kniferoll fastfetch-greeter -- DO NOT EDIT (managed by installer)
+function Test-TKAnsiSupported {
+    if ($env:WT_SESSION) { return $true }
+    if ($Host.UI.SupportsVirtualTerminal) { return $true }
+    if ($PSVersionTable.PSVersion.Major -ge 7) { return $true }
+    return $false
+}
+if (-not $env:TK_FASTFETCH_GREETED -and -not $env:DISABLE_WELCOME -and `
+    (Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
+    (Test-TKAnsiSupported)) {
+    if (Get-Command lolcrab -ErrorAction SilentlyContinue) {
+        fastfetch | lolcrab
+    } else {
+        fastfetch
+    }
+    $env:TK_FASTFETCH_GREETED = '1'
+}
+Remove-Item Function:Test-TKAnsiSupported -ErrorAction SilentlyContinue
+# END terminal-kniferoll fastfetch-greeter
 '@
 }
 
