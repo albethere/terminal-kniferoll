@@ -751,6 +751,60 @@ The "TUI description" column is what the user sees in the selector next to the t
 
 This list is not closed. The §6.2 cooling-off period (7 days from upstream release before any pin lands), the §6.2 quarterly inventory review cadence, and the §6.2 deferred-replacement pattern (deprecated tools removed by default, explicit `--migrate-<tool>` flags rather than silent breakage) all apply to AI tools the same as to every other category. Tools that drift from "best-in-class, most-elegant, most-secure" are replaced or dropped; new ones that emerge between reviews can be added with a §6.2-compliant version pin and a deep dive (§11) explaining why they earned a slot. The pattern: the inventory file at `kniferoll-unpack/lib/inventory/ai.sh` is the source of truth; this table is a snapshot of the v2.0-launch state.
 
+### 6b.8 Side-by-side live log display
+
+A dual-pane render — left side shows clean progress (`[OK] Installing nmap`, `[→] Compiling weathr via cargo`), right side tails the verbose package-manager output — is a v1 feature that works on Linux today and is a hard requirement for v2 cross-platform parity. Not aspirational. Proven in production on at least one OS, with a documented failure mode on Windows that the rewrite explicitly fixes.
+
+**The mechanism (verified by reading `lib/split_terminal.sh:1-187`).** Pure ANSI cursor positioning, no tmux, no external TUI library. The key operations:
+
+- Detect terminal dimensions via `tput cols` / `tput lines`. Disable silently if width < 100 cols or height < 12 rows or stdout isn't a TTY (`lib/split_terminal.sh:44-51`).
+- Compute a 65/35 split (left/right) at init time (lines 56-59).
+- Draw a Unicode box on the right side using `tput cup <row> <col>` to position the cursor and `printf '┌─...─┐'` for the borders (`_st_draw_box`, lines 75-103).
+- Open a temp log file at `/tmp/kniferoll-verbose-XXXXXX.log` with `chmod 600` and `umask 077` (lines 62-66).
+- Fork a background subshell that runs `tail -f` on the temp log, strips ANSI codes from each line via `sed`, truncates to the inner panel width, and writes each line into the box via `tput cup` + `printf` (`_st_start_tail`, lines 108-150). When the panel fills, clear and restart from the top.
+- The parent script writes verbose output to the temp log via `st_log` (line 162) or by redirecting `apt-get install ... >> "$ST_VERBOSE_LOG"`.
+- On exit, `st_cleanup` (line 170) kills the background process, removes the temp log, and moves the cursor below the box for the summary print.
+
+This is bash-3.2-compatible (no associative arrays, no `mapfile`), TTY-detection-aware, and uses only `tput`, `tail`, `sed`, and `printf` — all POSIX. It works in any single-pane terminal that supports cursor positioning. It does not require tmux, screen, gum, whiptail, Out-GridView, Spectre.Console, or anything else.
+
+**Current v1 sourcing — Linux only.** `install_linux.sh:1244-1245` sources `lib/split_terminal.sh`; `install_linux.sh:1279` calls `st_init` after the ASCII banner; `install_linux.sh:1612` calls `st_cleanup` before the summary. **`install_mac.sh` does NOT currently source it** — a grep across `install_mac.sh` for `split_terminal`, `st_init`, `st_log`, `st_cleanup`, `tput cup`, and `VERBOSE LOG` returns empty. Mac doesn't have the side-by-side viewer in v1 today. Chef's field signal that "presumably also Mac" is a reasonable speculation; the code disproves it. The fix in v2 is one line: source `lib/split_terminal.sh` (subtreed from `kniferoll-unpack/lib/`) in `kniferoll-mac` and `kniferoll-managed-mac` from phase 4. Same mechanism, no platform-specific code needed — the lib is POSIX bash.
+
+**Windows v1 was broken — separate-window approach.** `install_windows.ps1:1682-1790` (`Start-LogViewerWindow`) wrote a temp PowerShell script to `$env:TEMP/tk-logviewer-<guid>.ps1` that ran `Get-Content -Wait` on the install log file with color-coded line classification, then launched it via `Start-Process -FilePath 'wt.exe' -ArgumentList '-w', 'new', 'new-tab', ...` (`install_windows.ps1:1771-1779`). The `-w new new-tab` flags spawn a *new* Windows Terminal window or tab — not a split-pane in the existing window. The separate-window approach was unreliable in production (focus stealing, the live log appearing on a different monitor than the user was looking at, the new window orphaning on parent crash, timing races between parent and child PowerShell) and was removed in `hotfix/stabilize-cut`. The TODO comment at the removal site points to this section.
+
+**v2 Windows contract: `wt.exe split-pane`, in the existing window.** Windows Terminal has a native `split-pane` action that splits the current pane vertically or horizontally inside the same WT window. The v2 Windows install script invokes:
+
+```
+wt.exe -w 0 split-pane -V --colorScheme Cyberwave \
+  pwsh.exe -NoProfile -NoExit -ExecutionPolicy Bypass \
+    -Command "Get-Content -Wait '$logPath'"
+```
+
+`-w 0` targets the *current* Windows Terminal window (the one the user invoked the script from). `split-pane -V` splits vertically (left/right) producing roughly the same 65/35 layout as the Linux Unicode box. The new pane runs `Get-Content -Wait` to tail the install log. When the install completes, the script issues a closing `wt.exe` action to retire the right pane, leaving the user back in their original single-pane view.
+
+If the user is not running under Windows Terminal (e.g., they invoked from a legacy console host or VSCode integrated terminal that doesn't expose WT), the side-by-side feature gracefully degrades — no split, the log is still written to the file, the install proceeds normally. Detection: `$env:WT_SESSION` is non-empty when running under Windows Terminal.
+
+**Cross-platform contract.** Linux (extant), macOS (one-line port in phase 4), and Windows (via `wt.exe split-pane` in phase 8) all provide the same user experience: clean progress on the left, verbose tail on the right, in the *same* terminal session, gracefully disabled when the terminal is too small or the platform doesn't support it. The implementation differs (POSIX `tput cup` on Unix, `wt.exe split-pane` on Windows); the user-visible behavior does not.
+
+WSL2 inherits the Linux mechanism unchanged — `lib/split_terminal.sh` works inside WSL2 the same as on native Debian, including under Windows Terminal because WT correctly forwards the TTY to the WSL2 shell.
+
+### 6b.9 Cross-OS TUI primitive — pending decisions
+
+The §6b.3 per-OS implementation picks (macOS pure-bash, Linux gum+whiptail, Windows `Out-GridView`+`Read-Host`) are **provisional** pending four decisions Chef has flagged but not yet finalized. The plan's TUI primitive choices crystallize once Chef calls each:
+
+1. **v1 vs v2 split.** Hold v1 at "functional"; build full UX parity in v2. Provisionally yes — already the rewrite's framing throughout this plan.
+2. **Linux TUI primitive.** gum primary with whiptail fallback. Provisionally yes — matches §6b.3's current pick.
+3. **Windows TUI primitive.** Pure PowerShell (`Out-GridView` + `Read-Host`, the §6b.3 current pick) **vs.** Spectre.Console (richer .NET TUI library, requires the `Spectre.Console` PowerShell module from PSGallery). Trade-off: Spectre.Console produces a much closer aesthetic match to gum/lipgloss for the cross-OS feel; pure PowerShell hits the §6.1 "no third-party CLI required to run the installer" mandate harder. **Pending.**
+4. **Bonus: migrate macOS from pure-bash to gum.** Single-engine parity across all four POSIX targets (mac, linux-deb, linux-arch, wsl2 all using gum). Trade-off: gum becomes a hard dependency on macOS too, removing the §6.1 "no third-party CLI" win for the mac target; the gain is aesthetic uniformity across POSIX. **Pending.**
+
+Each of these affects §6b.3's per-OS implementation table. Once Chef decides:
+
+- If **Spectre.Console** is picked for Windows: §6b.3 Windows row is rewritten; §6.1 "no third-party CLI" bullet gets a documented Windows-specific carve-out and justification.
+- If **macOS migrates to gum**: §6b.3 macOS row is rewritten; §6.1 adjusts; the brewed-bash-4 re-exec story softens (the bash version dependency is just for `lib/split_terminal.sh`'s POSIX correctness, not for TUI rendering).
+
+The §6b.8 side-by-side log mechanism is **independent of these primitive choices** — it's POSIX bash on Unix and `wt.exe split-pane` on Windows regardless of which TUI primitive renders the menu itself. That is, gum, Spectre.Console, and Out-GridView all coexist with the existing split-terminal renderer; one is the menu, the other is the live-log pane.
+
+This subsection is the **placeholder** for those decisions. When they land, the §6b.3 picks update and this subsection collapses into a "Resolved" entry in §9.
+
 ---
 
 ## 7. Per-script structure
@@ -854,6 +908,8 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 None blocking phase 1. Everything is resolved (see below) or scoped to a later phase boundary.
 
+**Pending UX-primitive decisions (not blocking phase 1, but they crystallize §6b.3):** Spectre.Console vs pure-PowerShell on Windows; whether macOS migrates from pure-bash to gum for single-engine parity across the four POSIX targets. Tracked in §6b.9. The decisions affect rendering, not the cross-OS contract — so phase 1's skeleton work proceeds on the §6b.3 provisional picks, and a future PR rewrites the affected rows when Chef calls.
+
 **Phase-6 design detail (deferred, not blocking phase 1):** corp-side policy file format. Managed scripts will accept a small `kniferoll-corp.toml` (or .json) at `/etc/kniferoll/corp.toml` or `~/.config/kniferoll/corp.toml` defining: CA bundle path, internal package mirror URLs, MDM-detection commands. (Notably *not* splash-page selectors — see §6.2.) This is also the file that feeds the `KR_INTERNAL_REPOS` switch. Designed in phase 6.
 
 ### Resolved
@@ -872,6 +928,7 @@ None blocking phase 1. Everything is resolved (see below) or scoped to a later p
 - **Inventory cadence.** Quarterly review against three questions (best-in-class? actively maintained? most secure choice for its slot?). Recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md`. (§6.2)
 - **Deferred-replacement pattern.** Deprecated tools are not yanked from existing v1 installs at v2.0; v2.0 stops shipping them on fresh installs, and follow-up `--migrate-<tool>` flags handle the swap explicitly. First worked example: `speedtest-cli` → Ookla's official `speedtest` (§3.5.1). The pattern is a §6.2 security manifesto principle that carries forward to every future deprecation.
 - **TUI tool descriptions.** Every tool in the inventory ships with a ≤ 60-char description that renders in the TUI next to the tool name. CI-lint enforces the length cap so descriptions never wrap on 80-col terminals. Descriptions are committed in the inventory files (`kniferoll-unpack/lib/inventory/<category>.sh`), versioned with the tool, and reviewed at the same quarterly cadence as the tool itself. (§6b.1, §6b.7)
+- **Side-by-side live log display.** v1 feature confirmed working on Linux; mechanism verified by reading `lib/split_terminal.sh` (pure POSIX bash, in-terminal Unicode box via `tput cup`, background `tail -f` subshell — *not* tmux). v2 sources the same lib in `kniferoll-mac` and `kniferoll-managed-mac` (one-line port; Mac currently doesn't have it). Windows v2 implements parity via `wt.exe split-pane` in the existing Windows Terminal window — replacing v1's broken `wt.exe -w new new-tab` separate-window approach that was removed in `hotfix/stabilize-cut`. WSL2 inherits the Linux mechanism unchanged. Hard cross-OS parity requirement, not aspirational. See §6b.8.
 - **Project identity.** AI / cybersecurity engineer's working toolkit, designed to evolve. Stated in the §Context "What this project is for" paragraph and in the §8.1 niche.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
