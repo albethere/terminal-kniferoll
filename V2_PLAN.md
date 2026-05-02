@@ -45,7 +45,7 @@ The full inventory across the three scripts (deduped, not exhaustive on every pl
 - **AI CLIs**: gemini-cli, Anthropic Claude (winget on Windows).
 - **Cargo crates**: weathr, trippy (`trip`), yazi-fm, nu (Linuxbrew/cargo fallbacks).
 - **PSGallery (Windows)**: Oh-MyPosh, PSReadLine, Terminal-Icons, PSFzf, posh-git.
-- **Fonts** — all platforms, `ryanoasis/nerd-fonts` v3.4.0 zips downloaded directly: Iosevka, Hack, UbuntuMono, JetBrainsMono, 3270, FiraCode, CascadiaCode, VictorMono, Mononoki, SpaceMono, SourceCodePro, Meslo, GeistMono.
+- **Fonts** — all platforms, `ryanoasis/nerd-fonts` v3.4.0 zips downloaded directly: Iosevka, IosevkaTerm, Hack, UbuntuMono, JetBrainsMono, 3270, FiraCode, CascadiaCode, VictorMono, Mononoki, SpaceMono, SourceCodePro, Meslo, GeistMono.
 
 ### 1.5 Rust / rustup — the most-scarred toolchain
 
@@ -96,7 +96,7 @@ The AWK parser recognizes two region types — explicit `# BEGIN terminal-knifer
 
 ### 1.12 Summary statistic
 
-~5,917 lines of shell+PowerShell across the three monoliths, plus ~1,000 lines of supporting library, tests, and docs. Roughly 45 brew packages, 50+ apt packages, ~15 winget packages, 13 Nerd Font families, 4 Zscaler detection paths per platform.
+~5,917 lines of shell+PowerShell across the three monoliths, plus ~1,000 lines of supporting library, tests, and docs. Roughly 45 brew packages, 50+ apt packages, ~15 winget packages, 14 Nerd Font families, 4 Zscaler detection paths per platform.
 
 ---
 
@@ -601,7 +601,7 @@ v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementat
 | Package managers | All on | npm, yarn, pipx, uv. |
 | Security tools | All on | 1Password CLI, nmap, openssl, yara, ngrep, wireshark, wtfis, tcpdump. |
 | Cloud CLIs | All on | awscli, azure-cli, gcloud, rclone. |
-| Nerd Fonts | All on | 13 families pinned at v3.4.0 per the §6.2 cooling-off and pinning rules. |
+| Nerd Fonts | All on | 14 families pinned at v3.4.0 per the §6.2 cooling-off and pinning rules. |
 | **AI tools** | **All off** | See §6b.7 for the canonical set and the rationale for default-off. |
 | Desktop apps (macOS only) | All on | iTerm2, Keka. |
 
