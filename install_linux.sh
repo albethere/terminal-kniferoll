@@ -998,18 +998,99 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # ── OS detection ──────────────────────────────────────────────────────────────
+# Parse /etc/os-release (freedesktop.org standard), then resolve package
+# manager via the ID_LIKE chain — not just `command -v` — so derivatives like
+# Pop!_OS, Linux Mint, elementary, Kali, Zorin, Manjaro, EndeavourOS, CachyOS
+# all attribute to the right family. Detect WSL2 and immutable filesystems
+# (rpm-ostree, NixOS) up front and refuse cleanly rather than half-working.
+DISTRO_ID=""
+DISTRO_LIKE=""
+DISTRO_NAME=""
+DISTRO_VERSION=""
+DISTRO_CODENAME=""
+DISTRO_FAMILY=""
+KERNEL_VARIANT=""
+IS_WSL=false
+IS_IMMUTABLE=false
+
+if [[ -r /etc/os-release ]]; then
+    # Sourcing /etc/os-release is the documented usage — it's a key=value file
+    # that exports ID, ID_LIKE, NAME, VERSION_ID, VERSION_CODENAME, etc.
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    DISTRO_ID="${ID:-}"
+    DISTRO_LIKE="${ID_LIKE:-}"
+    DISTRO_NAME="${PRETTY_NAME:-${NAME:-}}"
+    DISTRO_VERSION="${VERSION_ID:-}"
+    DISTRO_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+fi
+
+# WSL2 detection — Microsoft kernel signature in /proc/sys/kernel/osrelease,
+# or WSL_DISTRO_NAME env var set when launched via wsl.exe.
+if [[ -n "${WSL_DISTRO_NAME:-}" ]] || \
+   ( [[ -r /proc/sys/kernel/osrelease ]] && \
+       grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null ); then
+    IS_WSL=true
+fi
+
+# Immutable filesystem detection — Homebrew, apt-installed binaries that write
+# to /usr will fail or do the wrong thing. Refuse rather than half-work.
+if [[ -d /sysroot/ostree ]] || command -v rpm-ostree &>/dev/null; then
+    IS_IMMUTABLE=true
+    KERNEL_VARIANT="rpm-ostree (Fedora Silverblue/Kinoite/uBlue)"
+elif [[ -e /etc/NIXOS ]] || [[ -d /nix/store && ! -w /usr/local ]]; then
+    IS_IMMUTABLE=true
+    KERNEL_VARIANT="NixOS"
+fi
+
+# Surface kernel oddities for diagnostics (non-fatal, just informational).
+[[ "$DISTRO_ID" == "pop" ]] && KERNEL_VARIANT="${KERNEL_VARIANT:-System76 kernel (Pop!_OS)}"
+
+if "$IS_IMMUTABLE"; then
+    die "Unsupported environment: ${KERNEL_VARIANT}. /usr is read-only on this system; this installer expects a mutable filesystem. Use a toolbox/distrobox container or run on a traditional distro."
+fi
+
+# ── Resolve package manager + family via ID_LIKE chain ────────────────────────
+# Helper: returns 0 if DISTRO_ID == family OR family appears in ID_LIKE.
+_distro_in_family() {
+    local family="$1"
+    [[ "$DISTRO_ID" == "$family" ]] && return 0
+    case " $DISTRO_LIKE " in
+        *" $family "*) return 0 ;;
+    esac
+    return 1
+}
+
 if command -v apt-get &>/dev/null; then
     PKG_MGR="apt"
-    info "Detected Debian/Ubuntu-based system"
+    if _distro_in_family "ubuntu"; then DISTRO_FAMILY="ubuntu"
+    elif _distro_in_family "debian"; then DISTRO_FAMILY="debian"
+    else DISTRO_FAMILY="debian"; fi    # apt-get implies Debian-family
 elif command -v pacman &>/dev/null; then
     PKG_MGR="pacman"
-    info "Detected Arch/CachyOS-based system"
+    DISTRO_FAMILY="arch"
     if command -v yay &>/dev/null; then AUR_HELPER="yay"
     elif command -v paru &>/dev/null; then AUR_HELPER="paru"
     else AUR_HELPER=""; fi
+elif command -v dnf &>/dev/null || command -v yum &>/dev/null; then
+    die "Detected ${DISTRO_NAME:-Fedora/RHEL family} (dnf/yum). This installer supports Debian/Ubuntu (apt) and Arch (pacman) families only."
+elif command -v zypper &>/dev/null; then
+    die "Detected ${DISTRO_NAME:-openSUSE} (zypper). This installer supports Debian/Ubuntu (apt) and Arch (pacman) families only."
+elif command -v apk &>/dev/null; then
+    die "Detected ${DISTRO_NAME:-Alpine} (apk/musl). This installer's Homebrew step requires glibc; run inside a Debian/Ubuntu container instead."
 else
-    die "Unsupported Linux distribution — no apt-get or pacman found"
+    die "Unsupported Linux distribution — no apt-get/pacman/dnf/zypper/apk. /etc/os-release: ${DISTRO_NAME:-<missing>}"
 fi
+
+# ── Single info line capturing the full operating context ────────────────────
+_distro_label="${DISTRO_NAME:-Linux}"
+[[ -n "$DISTRO_VERSION"  ]] && _distro_label+=" ${DISTRO_VERSION}"
+[[ -n "$DISTRO_CODENAME" ]] && _distro_label+=" (${DISTRO_CODENAME})"
+"$IS_WSL"                    && _distro_label+=" — WSL2"
+[[ -n "$KERNEL_VARIANT"  ]] && _distro_label+=" — ${KERNEL_VARIANT}"
+info "Detected ${_distro_label}"
+info "Package manager: ${PKG_MGR} | Family: ${DISTRO_FAMILY}${AUR_HELPER:+ | AUR helper: ${AUR_HELPER}}"
+unset _distro_label
 
 SUDO=""
 if [[ "$EUID" -ne 0 ]]; then
