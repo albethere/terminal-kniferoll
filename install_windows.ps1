@@ -530,9 +530,9 @@ function Invoke-ZscalerTrustSetup {
         )
         # Also glob any .crt / .pem under C:\ProgramData\Zscaler\
         if (Test-Path 'C:\ProgramData\Zscaler') {
-            $found = Get-ChildItem 'C:\ProgramData\Zscaler' -Filter '*.crt' -Recurse -ErrorAction SilentlyContinue |
-                     Where-Object { $_.Name -match 'zscaler' -or $_.DirectoryName -match 'zscaler' }
-            if ($found) { $zscCandidates = @($found[0].FullName) + $zscCandidates }
+            $found = @(Get-ChildItem 'C:\ProgramData\Zscaler' -Filter '*.crt' -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -match 'zscaler' -or $_.DirectoryName -match 'zscaler' })
+            if ($found.Count -gt 0) { $zscCandidates = @($found[0].FullName) + $zscCandidates }
         }
         foreach ($c in $zscCandidates) {
             if (Test-Path $c) {
@@ -555,13 +555,13 @@ function Invoke-ZscalerTrustSetup {
 
         foreach ($loc in $storeLocations) {
             try {
-                $certs = Get-ChildItem "Cert:\$loc\Root" -ErrorAction Stop |
+                $certs = @(Get-ChildItem "Cert:\$loc\Root" -ErrorAction Stop |
                          Where-Object {
                              ($_.Subject  -match '(?i)zscaler') -or
                              ($_.Issuer   -match '(?i)zscaler') -or
                              ($_.FriendlyName -match '(?i)zscaler')
-                         }
-                if ($certs) {
+                         })
+                if ($certs.Count -gt 0) {
                     $sb = [System.Text.StringBuilder]::new()
                     foreach ($cert in $certs) {
                         $b64 = [Convert]::ToBase64String($cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert), 'InsertLineBreaks')
@@ -877,11 +877,11 @@ function Invoke-ZscalerProfileSweep {
     # Sweeps Zscaler blocks in all known PS profile paths (equivalent to
     # sweep_rc_files in lib/rc_sweep.sh). Skips paths that don't exist.
     Write-Section "ZSCALER PROFILE SWEEP"
-    $targets = @(
+    $targets = @(@(
         $PROFILE,
         (Join-Path $env:USERPROFILE 'Documents\PowerShell\Microsoft.PowerShell_profile.ps1'),
         (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
-    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)
     if ($targets.Count -eq 0) {
         Write-Info "No existing PS profile files found — sweep skipped"
         return
