@@ -64,6 +64,8 @@ The canonical satellite roles v2 ships with. Status markers reflect Chef's final
 
 **Install method.** `sudo apt install mpd mpc` on Debian/Ubuntu, `sudo pacman -S mpd mpc` on Arch. Both ship as well-maintained native packages; no cargo/pip/binary-release dance.
 
+**Minimum version for the documented config schema.** `mpd >= 0.21` (for the `audio_output { type "alsa" ... }` semantics and the `bind_to_address` / `port` syntax used below). Bookworm and newer Ubuntu LTS ship 0.23+; Arch is on the latest. If a host's apt repo serves an older version, the install script refuses with a clear "this script needs mpd ≥ 0.21; your distro has X.Y.Z — upgrade your apt sources or use a backports repo" message rather than writing config the daemon will reject.
+
 **Config file.** `/etc/mpd.conf` — the script writes a kniferoll-managed marker block (per `V2_PLAN.md` §1.8 sweep pattern) containing:
 
 ```
@@ -112,6 +114,8 @@ The path prompts: `<MUSIC_LIB_PATH>` defaults to `~/Music` (creates the dir if m
 The recommended path is ESPHome's BT Proxy because it's the cleaner architecture: ESPHome is purpose-built for this, ships maintained YAML templates, and HA discovers it natively. The alternative (`bluez` + `home_assistant_bluetooth` proxy) is more general but requires more glue and has a worse maintenance story for this specific use case.
 
 **Install method.** `pip install esphome` inside a dedicated venv at `/opt/kniferoll/venv-esphome` (NOT the system Python). The venv approach isolates ESPHome's dependency tree from the host Python. `apt install python3-venv` is a prerequisite (added to the script's preflight if missing).
+
+**Minimum version for the documented YAML schema.** `esphome >= 2024.6` (for `bluetooth_proxy:` block + `platform: linux` / `board: linux` host-target support). The pip install pins to a specific version per the §6.2 cooling-off rule; the pinned version is recorded in `kniferoll-unpack/lib/inventory/satellite.sh` alongside the role's other metadata. Re-runs upgrade only when the pin advances.
 
 **Config file.** `/etc/kniferoll/esphome-btproxy.yaml`, generated from a template:
 
@@ -181,6 +185,8 @@ WantedBy=multi-user.target
 
 **Install method.** Install via apt where available (Debian 12+ `apt install zigbee2mqtt`); else from npm into `/opt/kniferoll/z2m`. Apt is preferred when available because the package is signed and tracked by the distro. Npm install path fetches `zigbee2mqtt` at a pinned version, runs `npm ci` to lock the dependency tree, no curl-pipe-bash anywhere.
 
+**Minimum version for the documented configuration.** `zigbee2mqtt >= 1.30` (for HA-discovery v2 schema + the `homeassistant: true` shorthand used in the config below). The apt path on older distros may serve a back-ported version that's pre-1.30; in that case the install script falls back to the npm-pinned path. Co-installed mosquitto: any 2.x version (the broker side of the protocol is stable and `mosquitto >= 2.0` is in every supported distro's apt/pacman as of 2026).
+
 **Preflight check.** Before installing, the script enumerates serial devices (`ls /dev/serial/by-id/` and `ls /dev/ttyUSB*`) and refuses to proceed if no plausible Zigbee adapter is found. The user can override with `--force-no-stick` (e.g., they're installing in advance of plugging the stick in).
 
 **Config file.** `/opt/kniferoll/z2m/data/configuration.yaml`:
@@ -228,6 +234,8 @@ advanced:
 **What it does.** Runs the Wyoming voice-satellite protocol; HA's Voice Assist points at it and the Pi becomes a "speak/listen" endpoint near wherever the Pi physically lives. Out of the first-wave default because mic/speaker hardware varies widely (USB mic, HAT mic, no mic at all) and Voice Assist setup downstream in HA is its own configuration project.
 
 **Install method.** `pip install wyoming-satellite` inside a dedicated venv at `/opt/kniferoll/venv-wyoming`. Python 3.11+ required; preflight verifies the host Python version.
+
+**Minimum version for the documented systemd ExecStart args.** `wyoming-satellite >= 1.4` (for the `--snd-command` / `--mic-command` arg shape and the `--uri tcp://...:10700` form). Pinned via the cooling-off rule; recorded in `kniferoll-unpack/lib/inventory/satellite.sh`. Older versions used different flag names (`--audio-input` / `--audio-output`); the install script honors the pinned version, and a runtime version check inside the systemd unit's ExecStart wrapper would be overengineering for a venv-pinned tool.
 
 **Hardware enumeration.** Before installing, the script lists available capture and playback devices via `arecord -l` (capture) and `aplay -l` (playback) and prompts the user to pick one of each. The picks are stored in the systemd unit's `ExecStart` args. Users with no capture device can pick `none` to install but disable the listening side; the satellite then becomes speaker-only.
 
