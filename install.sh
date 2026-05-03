@@ -41,8 +41,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$OS_TYPE" in
     Linux)
-        echo -e "[*] Detected Linux environment. Delegating to install_linux.sh..."
-        bash "$SCRIPT_DIR/install_linux.sh" "$@"
+        echo -e "[*] Detected Linux environment. Delegating to install_linux_v2.sh..."
+        bash "$SCRIPT_DIR/install_linux_v2.sh" "$@"
         ;;
     Darwin)
         echo -e "[*] Detected macOS environment. Delegating to install_mac.sh..."
