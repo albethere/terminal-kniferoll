@@ -1941,9 +1941,11 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
         # any one of those fails to locate, `apt-get install` errors out
         # atomically and installs NONE of the others, including cmatrix and
         # fastfetch which DO exist in apt.
+        # speedtest-cli intentionally dropped — Chef's policy: deprecated
+        # upstream, supply chain risk. Replacement (if any) handled by a
+        # separate task, not this file.
         apt_batch "SHELL EXTRAS (apt)" \
-            "speedtest-cli:speedtest-cli" "unzip:unzip" \
-            "fastfetch:fastfetch" "cmatrix:cmatrix"
+            "unzip:unzip" "fastfetch:fastfetch" "cmatrix:cmatrix"
         brew_extras_install "SHELL EXTRAS (brew)" \
             "zoxide:zoxide" "starship:starship" "cbonsai:cbonsai"
 
