@@ -24,74 +24,22 @@ for _brew_prefix in /opt/homebrew /usr/local; do
 done
 unset _brew_prefix
 
-# ── TTY-guarded color palette ─────────────────────────────────────────────────
-if [ -t 1 ]; then
-  RED='\033[0;31m';   GREEN='\033[0;32m';  YELLOW='\033[1;33m'
-  CYAN='\033[0;36m';  BOLD='\033[1m';      DIM='\033[2m';       RESET='\033[0m'
-  ORANGE='\033[38;5;208m'; STEEL='\033[38;5;249m'
-  HERB='\033[38;5;106m';   BLADE='\033[38;5;255m'
-else
-  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; RESET=''
-  ORANGE=''; STEEL=''; HERB=''; BLADE=''
-fi
+# ── Shared UX primitives ──────────────────────────────────────────────────────
+# Color palette, log file init, ok/info/warn/skip/err/die, banner, quip,
+# run_optional, download_to_tmp, append_if_missing, ask_yes_no, is_installed,
+# print_summary. Identical implementation in install_linux_v2.sh.
+_SCRIPT_DIR_BOOTSTRAP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/ui.sh
+source "$_SCRIPT_DIR_BOOTSTRAP/lib/ui.sh"
+unset _SCRIPT_DIR_BOOTSTRAP
 
-# ── Log file ──────────────────────────────────────────────────────────────────
-LOG_FILE="$HOME/.terminal-kniferoll/logs/install_$(date +%Y%m%d_%H%M%S).log"
-mkdir -p "$(dirname "$LOG_FILE")"
-
-_log() {
-  local level="$1" msg="$2"
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $msg" >> "$LOG_FILE"
-}
-
-# ── Logging helpers ───────────────────────────────────────────────────────────
-ok()     { echo -e "${GREEN}[✓]${RESET} ${HERB}$*${RESET}";   _log "OK"    "$*"; }
-info()   { echo -e "${CYAN}[→]${RESET} $*";                   _log "INFO"  "$*"; }
-warn()   { echo -e "${ORANGE}[~]${RESET} $*";                 _log "WARN"  "$*"; }
-skip()   { echo -e "${DIM}[~] skip: $*${RESET}";              _log "SKIP"  "$*"; }
-err()    { echo -e "${RED}[✗]${RESET} $*";                    _log "ERROR" "$*"; }
-die()    { echo -e "${RED}[✗] FATAL: $*${RESET}" >&2;         _log "ERROR" "FATAL: $*"; exit 1; }
-banner() { echo -e "\n${BOLD}${CYAN}[ $* ]${RESET}";          _log "INFO"  "=== $* ==="; }
-quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
-
-# ── Failed tools tracker ──────────────────────────────────────────────────────
+# ── Failed tools tracker + retry hint shown by print_summary ──────────────────
 FAILED_TOOLS=()
+FAILED_TOOLS_HINT="brew install <pkg> to retry failed items"
 
 # shellcheck disable=SC2329  # invoked indirectly via ERR trap below
 on_error() { warn "Unexpected failure at line $1: $2"; }
 trap 'on_error "$LINENO" "$BASH_COMMAND"' ERR
-
-# ── Helper: run with soft failure ────────────────────────────────────────────
-run_optional() {
-    local desc="$1"; shift
-    info "$desc"
-    if (set +Ee; "$@"); then ok "$desc"; return 0; fi
-    warn "$desc — failed, continuing"
-    return 0
-}
-
-# ── Helper: download URL to a secure temp file ───────────────────────────────
-# Respects CURL_CA_BUNDLE if set (Zscaler managed-device mode).
-download_to_tmp() {
-    local url="$1" pattern="$2" tmp_file old_umask
-    old_umask="$(umask)"
-    umask 077
-    tmp_file="$(mktemp "/tmp/${pattern}")"
-    umask "$old_umask"
-    chmod 600 "$tmp_file"
-    local curl_opts=(--proto '=https' --tlsv1.2 -fsSL)
-    [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
-        curl_opts+=(--cacert "$CURL_CA_BUNDLE")
-    curl "${curl_opts[@]}" "$url" -o "$tmp_file"
-    echo "$tmp_file"
-}
-
-# ── Helper: append line to file if absent ────────────────────────────────────
-append_if_missing() {
-    local file="$1" line="$2"
-    touch "$file"
-    grep -Fq "$line" "$file" || echo "$line" >> "$file"
-}
 
 # ── Write ~/.config/terminal-kniferoll/zscaler-env.sh (macOS) ────────────────
 # Installer writes this file fresh on every run with absolute macOS detection
@@ -132,17 +80,6 @@ ENVEOF
     mv -f "$_tmp" "$env_file"
     ok "~/.config/terminal-kniferoll/zscaler-env.sh written (macOS)"
 }
-
-# ── Helper: yes/no prompt ────────────────────────────────────────────────────
-ask_yes_no() {
-    local prompt="$1"
-    echo -en "${CYAN}[?] ${prompt} [Y/n] ${RESET}"
-    read -r _reply
-    [[ -z "$_reply" || "$_reply" =~ ^[Yy]$ ]]
-}
-
-# ── Helper: check if binary is on PATH ───────────────────────────────────────
-is_installed() { command -v "$1" &>/dev/null; }
 
 # ── Helper: check if macOS .app is installed ─────────────────────────────────
 is_app_installed() {
@@ -551,20 +488,7 @@ install_lolcrab() {
     return 0
 }
 
-# ── Mission summary ───────────────────────────────────────────────────────────
-print_summary() {
-    banner "MISSION DEBRIEF"
-    if [[ ${#FAILED_TOOLS[@]} -eq 0 ]]; then
-        echo -e "${GREEN}${BOLD}  ALL SYSTEMS NOMINAL — zero casualties.${RESET}"
-    else
-        echo -e "${YELLOW}${BOLD}  MISSION COMPLETE WITH CASUALTIES:${RESET}"
-        for t in "${FAILED_TOOLS[@]}"; do echo -e "  ${RED}[✗]${RESET}  $t"; done
-        quip "Try: brew install <pkg> to retry failed items"
-    fi
-    echo
-    echo -e "${DIM}  [→] Log saved to: ${LOG_FILE}${RESET}"
-    _log "INFO" "Install complete. Failures: ${#FAILED_TOOLS[@]}"
-}
+# print_summary — provided by lib/ui.sh, parameterised via FAILED_TOOLS_HINT.
 
 # ── Help text ─────────────────────────────────────────────────────────────────
 show_help() {
