@@ -1484,6 +1484,51 @@ function Install-Gum {
 # =============================================================================
 
 # =============================================================================
+# HOUSEKEEPING -- evict tools explicitly removed from this project
+# =============================================================================
+# Symmetric to cleanup_removed_tools() in install_linux.sh / install_mac.sh.
+# Runs every install to evict previously-installed tools we've cut.
+# All checks are guarded -- safe on fresh machines.
+
+function Invoke-CleanupRemovedTools {
+    Write-Section 'HOUSEKEEPING -- EVICTING REMOVED TOOLS'
+    $didWork = $false
+
+    # ---- speedtest-cli -- evicted 2026-05-03: deprecated upstream, supply-chain risk
+    #      (see docs/SUPPLY_CHAIN_RISK.md). Was never installed by this script,
+    #      but defensive in case the user pip/winget/scoop-installed it manually.
+    if (Test-Cmd pip) {
+        pip show speedtest-cli *>$null
+        if ($LASTEXITCODE -eq 0) {
+            $didWork = $true
+            Write-Warn 'speedtest-cli (pip) found -- evicting (deprecated, supply chain risk)'
+            pip uninstall -y speedtest-cli 2>$null | Out-Null
+            Write-OK 'speedtest-cli (pip) -- evicted'
+        }
+    }
+    if (Test-Cmd winget) {
+        winget list --id 'Ookla.Speedtest.CLI' --exact *>$null
+        if ($LASTEXITCODE -eq 0) {
+            $didWork = $true
+            Write-Warn 'Ookla speedtest CLI (winget) found -- evicting'
+            winget uninstall --id 'Ookla.Speedtest.CLI' --silent --accept-source-agreements 2>$null | Out-Null
+            Write-OK 'Ookla speedtest CLI (winget) -- evicted'
+        }
+    }
+    if (Test-Cmd scoop) {
+        $scoopList = (scoop list 2>$null | Out-String)
+        if ($scoopList -match 'speedtest') {
+            $didWork = $true
+            Write-Warn 'speedtest (scoop) found -- evicting'
+            scoop uninstall speedtest 2>$null | Out-Null
+            Write-OK 'speedtest (scoop) -- evicted'
+        }
+    }
+
+    if (-not $didWork) { Write-OK 'No removed tools found -- clean slate' }
+}
+
+# =============================================================================
 # INSTALL HELPERS
 # =============================================================================
 
@@ -1889,7 +1934,7 @@ function reload { . $PROFILE; Write-Host 'Profile reloaded.' -ForegroundColor Cy
 # BEGIN terminal-kniferoll ff-alias -- DO NOT EDIT (managed by installer)
 if ((Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
     (Get-Command lolcrab -ErrorAction SilentlyContinue)) {
-    function ff { fastfetch | lolcrab }
+    function ff { fastfetch --pipe | lolcrab }
 } elseif (Get-Command fastfetch -ErrorAction SilentlyContinue) {
     function ff { fastfetch }
 }
@@ -1968,7 +2013,7 @@ if (-not $env:TK_FASTFETCH_GREETED -and -not $env:DISABLE_WELCOME -and `
     (Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
     (Test-TKAnsiSupported)) {
     if (Get-Command lolcrab -ErrorAction SilentlyContinue) {
-        fastfetch | lolcrab
+        fastfetch --pipe | lolcrab
     } else {
         fastfetch
     }
@@ -2220,6 +2265,7 @@ if ($ZscalerStatus) { Show-ZscalerStatus }  # exits 0/1 inside Show-ZscalerStatu
 
 Test-Prerequisites          # gates + auto-install PS 7 + (possibly) relaunch
 Initialize-PackageManagers  # Scoop + Choco + gum
+Invoke-CleanupRemovedTools  # evict deprecated tools (speedtest-cli, etc.) -- after pkg mgrs are ready
 Invoke-ZscalerHardGate      # managed-device preflight: cert trust before any downloads
 Write-ZscalerEnvFile        # write env file with Windows-specific detection paths
 Invoke-ZscalerProfileSweep # sweep old Zscaler blocks from existing PS profiles
