@@ -33,9 +33,22 @@ source "$ZSH/oh-my-zsh.sh"
 # On Linux, OMZ loads zsh-autosuggestions and fast-syntax-highlighting
 # from $ZSH_CUSTOM/plugins/ (git-cloned by installer).
 
-# FZF
+# FZF -- version-aware init. fzf >= 0.48.0 ships `fzf --zsh` (single-source);
+# older builds (Ubuntu 22.04 apt is 0.30.0) emit "unknown option: --zsh" and
+# break shell startup. Detect version and fall back to bundled key-bindings/
+# completion scripts on older fzf. Linuxbrew is the canonical source on Linux.
 if command -v fzf &>/dev/null; then
-    source <(fzf --zsh)
+    _tk_fzf_ver="$(fzf --version 2>/dev/null | awk '{print $1; exit}')"
+    if [[ -n "$_tk_fzf_ver" ]] && \
+       [[ "$(printf '%s\n0.48.0\n' "$_tk_fzf_ver" | sort -V | head -n1)" == "0.48.0" ]]; then
+        source <(fzf --zsh)
+    else
+        for _tk_fzf_dir in /usr/share/doc/fzf/examples /usr/share/fzf; do
+            [[ -r "$_tk_fzf_dir/key-bindings.zsh" ]] && source "$_tk_fzf_dir/key-bindings.zsh"
+            [[ -r "$_tk_fzf_dir/completion.zsh"   ]] && source "$_tk_fzf_dir/completion.zsh"
+        done
+    fi
+    unset _tk_fzf_ver _tk_fzf_dir
 fi
 
 # --- PYENV ---

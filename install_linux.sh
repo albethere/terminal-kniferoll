@@ -1091,6 +1091,17 @@ cleanup_removed_tools() {
         ok "speedtest-cli — evicted"
     fi
 
+    # ── apt fzf — evicted 2026-05-03: apt ships 0.30.0 which lacks `fzf --zsh`
+    #   (added in 0.48.0). Linuxbrew is the canonical source for fzf going
+    #   forward. Pacman is left alone — Arch ships current.
+    if [[ "$PKG_MGR" == "apt" ]] && dpkg -s fzf &>/dev/null 2>&1; then
+        did_work=true
+        warn "apt fzf found — evicting (replaced by Homebrew fzf for --zsh support)"
+        run_optional "Removing apt fzf" \
+            bash -c "$SUDO apt-get remove -y -qq fzf"
+        ok "apt fzf — evicted"
+    fi
+
     "$did_work" || skip "No removed tools found — clean slate"
 }
 
@@ -1926,7 +1937,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
             "certtool:gnutls-bin" "hexyl:hexyl"
 
         apt_batch "DEVELOPER UTILITIES" \
-            "jq:jq" "fzf:fzf" "rg:ripgrep" "micro:micro" \
+            "jq:jq" "rg:ripgrep" "micro:micro" \
             "sqlite3:sqlite3" "lua5.4:lua5.4" "m4:m4" "lz4:lz4" \
             "exiftool:libimage-exiftool-perl" "git:git" \
             "curl:curl" "gzip:gzip" "tmux:tmux" "btop:btop"
@@ -1949,8 +1960,12 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         apt_batch "SHELL EXTRAS (apt)" \
             "rclone:rclone" "unzip:unzip" \
             "fastfetch:fastfetch" "cmatrix:cmatrix"
+        # fzf via brew (not apt) -- apt ships 0.30.0 which lacks `fzf --zsh`
+        # (added in 0.48.0). Linuxbrew gives us a current build. The version
+        # check in shell/zshrc.zsh keeps old-fzf machines from breaking, but
+        # brew is the canonical source going forward.
         brew_extras_install "SHELL EXTRAS (brew)" \
-            "zoxide:zoxide" "starship:starship" "cbonsai:cbonsai"
+            "fzf:fzf" "zoxide:zoxide" "starship:starship" "cbonsai:cbonsai"
 
         # Tools requiring non-apt installation methods
         # uv — safe install only (astral.sh custom-domain script removed)
