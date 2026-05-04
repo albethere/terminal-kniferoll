@@ -221,7 +221,7 @@ The general pattern, called out in the §6.2 security manifesto: a tool flagged 
 - **Arch:** AUR `speedtest-cli` (the AUR package wraps the official Ookla binary, not Sivel's deprecated Python). PKGBUILD verified at install time; falls back to Ookla's release tarball with a committed SHA256 if AUR is unavailable.
 - **Windows:** `winget install Ookla.Speedtest.CLI`.
 
-**Migration path (post-v2.0).** A follow-up release ships `kniferoll migrate speedtest-cli` (or `--migrate-speedtest-cli` flag on the per-OS scripts). When invoked: `pip uninstall speedtest-cli` (or distro equivalent if installed via apt/pacman/brew), then install Ookla's `speedtest` via the path above, then update `~/.kniferoll/state.json` to record the migration. v2.0 itself does not remove `speedtest-cli` from existing installs — users opted into it once at v1, and the v2.0 release is not permitted to silently undo that opt-in. The migration is opt-in, documented in the v2.x release notes, and accompanied by a deep dive (§11) explaining what changed and why.
+**Migration path (implicit, atomic, in v2.0).** Per the active-deprecation-removal pattern in §6.2, v2.0 removes `speedtest-cli` and installs Ookla's `speedtest` in the same install run. The deprecation sweep iterates `KNIFEROLL_DEPRECATED_PACKAGES` and runs `pip uninstall speedtest-cli` (or `apt remove`, `brew uninstall`, `pacman -R` per how kniferoll originally installed it on this host), scrubs init lines, and removes the cached pip metadata. The Ookla install (per the per-OS rows above) lands as part of the same run. The transition is visible in the install banner: `[remove] speedtest-cli (deprecated)` followed by `[install] speedtest (Ookla)`. No opt-in `--migrate-<tool>` flag and no follow-up release required — kniferoll-installed tools are kniferoll-removable and v2.0 is the kniferoll-installed-tool baseline. The deep dive (§11) accompanies the v2.0 release and documents what changed and why. Tools that *weren't* installed by kniferoll (the user `pip install`ed `speedtest-cli` themselves outside any kniferoll run) are left alone with a `[skip] speedtest-cli: not installed by kniferoll, leaving alone` line — same as the §6.2 in-bounds rule.
 
 **TUI placement.** Ookla `speedtest` lives in the Developer tools category, default-on. Description shown in the TUI: "Ookla's official speed test (signed binary)". v1's `speedtest-cli` is removed from every category in v2 — selecting Custom on a fresh install will not show it as an option.
 
@@ -528,6 +528,107 @@ Each per-OS repo ships with `lib/` (and `managed-lib/` for managed) already vend
 
 ---
 
+## 5c. Tailscale capability
+
+Tailscale is the network substrate underneath cross-host fleet operations — Chef's Pi-from-phone use case (§5d) and the broader cybersecurity-engineer pattern of "I want to ssh / mosh / curl my home box from a coffee shop without poking holes in the firewall." v2 makes Tailscale a first-class capability: real install logic on every supported OS, a clean auth UX, opt-in by default.
+
+### 5c.1 v1 state — alias-only, no install
+
+A grep across `*.sh` and `*.ps1` in the v1 repo turns up exactly one Tailscale reference: `install_mac.sh:1145-1148` writes a shell alias to `~/.shell/aliases_mac.zsh`:
+
+```
+alias tailscale="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+```
+
+The alias is unconditional — written on every macOS install regardless of whether `Tailscale.app` exists. On a machine without the GUI app the alias resolves to a non-existent binary (harmless, just doesn't work). v1 does not install Tailscale on any platform; this stub alias is the entire surface. v2 removes it: the v2 install puts the `tailscale` binary on `PATH` directly, rendering the alias redundant.
+
+### 5c.2 Status: opt-in, off by default
+
+Tailscale is a TUI checkbox toggle in the **Network & remote access** category (new in v2; see §6b.1), defaulted OFF. Users who select it get the install path below; users who don't get nothing. Auto-enabling Tailscale is explicitly out of bounds.
+
+### 5c.3 Install paths per OS
+
+Every install path respects the §6.2 no-curl-pipe-bash rule. Tailscale's documentation defaults to a curl-pipe-bash install on Linux; v2 explicitly does not use that path even though Tailscale recommends it.
+
+| OS | Install command | Notes |
+|----|-----------------|-------|
+| macOS (workstation, default) | `brew install --cask tailscale` | Default for `kniferoll-mac` and `kniferoll-managed-mac`. Installs the GUI app + bundled CLI. |
+| macOS (headless) | `brew install tailscale` | Sub-toggle in the TUI when Tailscale is selected — for servers / headless setups that don't want the GUI. |
+| Windows | `winget install tailscale.tailscale` | Native winget package. |
+| Linux Debian/Ubuntu | apt repo, properly added: fetch `https://pkgs.tailscale.com/stable/<distro>/<codename>.noarmor.gpg` to `/etc/apt/keyrings/tailscale-archive-keyring.gpg`, write `/etc/apt/sources.list.d/tailscale.list` referencing it, `sudo apt update && sudo apt install tailscale`. The signing-key fingerprint is verified against `kniferoll-unpack/lib/keys/tailscale.fingerprint` (committed). |
+| Linux Arch | `sudo pacman -S tailscale` | In the `extra` repo; no AUR helper required. |
+| WSL2 Debian/Ubuntu | Same as native Debian/Ubuntu (apt repo path). The Tailscale daemon runs inside the WSL2 VM; the user authenticates there separately from any Windows-host Tailscale. The post-install summary spells out the dual-context implication. |
+
+### 5c.4 Auth UX flow
+
+When Tailscale is selected, after the package install completes the script runs:
+
+1. **Start the daemon.** `sudo systemctl enable --now tailscaled` on Linux/WSL2; `brew services start tailscale` on macOS headless; service auto-starts on Windows via the MSI. On macOS cask the GUI app manages its own daemon — the script just verifies the menu-bar app is present.
+2. **Print a clear banner.** `[!] Tailscale needs authentication. Press Enter to start, then open the URL printed below in your browser.`
+3. **Run `tailscale up`** (or `tailscale up --ssh` if the SSH sub-option was selected; see §5c.5) and capture the auth URL it prints.
+4. **Echo the URL prominently.** Box-bordered per `docs/FLAVOR.md`'s security-decision framing: `[!] AUTHENTICATE HERE: https://login.tailscale.com/a/<token>`.
+5. **Poll for authenticated state.** Run `tailscale status` every 5 seconds until the device shows authenticated, 5-minute timeout. On timeout: exit 5 (managed) or print "auth still pending — re-run `tailscale up` when ready" and continue (unmanaged).
+6. **Verify connectivity.** `tailscale ping <self-hostname>` to confirm tailnet reachability. Failure prints a remediation note ("check that your tailnet has at least one other node") but doesn't fail the install.
+
+### 5c.5 Sub-option: Tailscale SSH
+
+A nested TUI sub-checkbox under Tailscale, defaulted OFF: **"Enable Tailscale SSH (`tailscale up --ssh`) — lets other tailnet devices SSH in without managing keys."**
+
+This is a real security decision. Tailscale SSH means anyone on your tailnet with permission can SSH in subject to your tailnet ACLs (which default to "everyone-can-everyone" unless configured). Personal tailnet with only your own devices: convenience win. Shared or family tailnet: footgun. When the sub-option is selected, the TUI surfaces a one-line warning:
+
+```
+[!] Tailscale SSH lets any tailnet device with permission SSH in
+    without your traditional ssh keys. Verify your tailnet ACLs.
+```
+
+Selecting it adds `--ssh` to the `tailscale up` invocation in §5c.4 step 3. Default: OFF.
+
+### 5c.6 Posture awareness — managed scripts
+
+On the four `kniferoll-managed-*` repos, before installing Tailscale the TUI surfaces a warning banner:
+
+```
+[!] Tailscale creates an outbound tunnel that may violate your
+    corporate network policy. Verify with IT before proceeding.
+```
+
+Does *not* block — corporate users may legitimately use Tailscale (some orgs run headscale or self-host coordination). But the warning is loud, prints before the package install runs, and the user must confirm to proceed.
+
+A managed-script-specific override: when `kniferoll-corp.toml` (the §9 phase-6 corp-policy file) sets `tailscale.allowed = true` or `tailscale.allowed = false`, the generic warning is replaced with the corp's explicit position. Silent file → generic warning above.
+
+---
+
+## 5d. HA satellite stack (Pi-flavored)
+
+A new TUI category in v2 — Linux-only — for running Home Assistant satellite roles on a Pi (or any Linux box). The framing differs from earlier drafts of this section: Home Assistant runs on `hyp-pve-02` (one of two Proxmox nodes), and the Pi is a **satellite** to that brain, not a brain of its own. Roles supported in v2 ship music control, BLE proxying, Zigbee bridging, and voice-satellite endpoints; Frigate NVR and ESPresense are explicitly out-of-scope on Pi targets with documented alternatives.
+
+The full design — role catalog, install paths, idempotency contract, next-steps banner format, Pi-specific defensive defaults, multi-Pi-orchestration scope cut to v2.1+ — lives in **[`V2_PLAN_SATELLITE.md`](./V2_PLAN_SATELLITE.md)**. This section is a pointer; the satellite doc is the canonical specification.
+
+### 5d.1 Scope summary (final calls baked in)
+
+| Role | Status | Notes |
+|------|--------|-------|
+| **MPD media endpoint** | **DEFAULT-ON** | First-wave default. Direct media-control fit, lightweight, fast install. |
+| **Bluetooth Proxy (ESPHome)** | **DEFAULT-ON** | First-wave default. Cheap; extends HA's BLE reach to wherever the Pi physically lives. |
+| Zigbee2MQTT | AVAILABLE-OFF | Visible in TUI, defaulted unchecked. Requires Zigbee USB stick; preflight refuses if no stick is enumerated unless `--force-no-stick` is passed. |
+| Wyoming voice satellite | AVAILABLE-OFF | Visible in TUI, defaulted unchecked. Requires mic/speaker hardware decisions and HA Voice Assist setup downstream. |
+| Frigate NVR | OUT OF SCOPE on Pi | Pi 4 is a marginal fit; Coral USB mandatory; install footprint is heavy. Recommended host: `hyp-pve-02`. Future `kniferoll-proxmox` capability could ship it. |
+| ESPresense | OUT OF SCOPE on Pi | Wrong hardware target (ESP32, not Pi). Adjacent functionality via the §4.2 BT Proxy + HA's bermuda integration. |
+
+### 5d.2 Per-OS scope
+
+The HA satellite category appears only on `kniferoll-linux-deb`, `kniferoll-linux-arch`, and their managed twins. Mac and Windows machines are HA *clients* (Companion app via brew/winget, a different capability category) — they aren't satellite hardware in this fleet. WSL2 is also out (not a satellite host shape).
+
+### 5d.3 Multi-Pi orchestration — deferred to v2.1+
+
+v2.0 ships **one-machine-at-a-time** satellite installs. The user runs the unpack flow on each Pi separately. Multi-Pi orchestration (one machine triggers install across N Pis via Tailscale + SSH) adds substantial complexity — SSH key management, target inventory, partial-failure handling, transactional rollback semantics — for a cardinality Chef doesn't yet have. Designed against real fleet size when the second Pi enters the picture, not against "what if."
+
+### 5d.4 TUI gating
+
+The HA satellite category is enabled when at least one of the following holds: (a) Tailscale is selected in the same run or already installed and authenticated, or (b) the user passed `--ha-host LAN_HOST_OR_IP`. Otherwise the category's rows render dim/grey with `[needs tailscale or --ha-host]` and are non-selectable. The reasoning, role-by-role specs, and full implementation contract are in `V2_PLAN_SATELLITE.md`.
+
+---
+
 ## 6. Architectural principles
 
 The rewrite is governed by three values, in priority order: **simplicity, security, beauty**.
@@ -549,12 +650,45 @@ The rewrite is governed by three values, in priority order: **simplicity, securi
 - **Cooling-off period: 7 days from upstream release.** When pinning a new version of any tool, font, or cargo crate, maintainers wait at least 7 days from the upstream release date before merging the bump PR. Most supply-chain attacks (yanked malicious packages, compromised maintainer accounts, registry takeovers) get caught within hours-to-days; a 7-day floor lets the community immune system do its work before kniferoll's CI starts feeding compromised artifacts to users. The pinned-version table records `released_at` ISO date alongside each version string; CI on bump PRs verifies `today - released_at >= 7 days` and fails otherwise. Emergency security bumps (CVEs, urgent patches) override via `--allow-fresh` with a documented reason in the PR body.
 - **Lean dependency surface.** Every tool in the default inventory earns its slot. The projector stack (weathr, trippy, the animation runtime) lives in `silo-agent/kniferoll-projector` and is opt-in via `--projector` — none of it lands in a per-OS repo's default install. If a tool is "nice to have" but not load-bearing for the shell experience, it goes in an opt-in flag, not the default. Smaller default inventory means fewer pinned versions to track, fewer CVE windows, fewer cooling-off-period bumps to coordinate.
 - **Quarterly inventory review.** The default tool inventory is reviewed quarterly against three questions: still best-in-class? still actively maintained, with a healthy upstream? still the most secure / least-attack-surface choice for its slot? Tools that fail any of the three are replaced or dropped in the next release. The review is recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md` listing tools held / added / removed and the rationale for each change. This is the project's structural answer to "the toolkit must evolve" — cadence-driven, transparent, and auditable. The AI category (§6b.7) is the most active beneficiary of this review since AI tools evolve faster than anything else, but the cadence applies to every category.
-- **Deferred-replacement pattern: deprecated tools removed by default; explicit migration flags, not silent breakage.** When a tool in v1's inventory is flagged as deprecated, abandoned, or a supply-chain risk in v2's review, it does not ship in v2's default install on fresh setups. Existing installs from v1 are *not* silently yanked — v2 doesn't reach into a user's machine and uninstall things behind their back. Follow-up v2.x releases ship explicit `--migrate-<tool>` flags (or `kniferoll migrate <tool>` sub-commands) that, when invoked, remove the deprecated tool and install its replacement (or just remove it, if nothing replaces it). The migration is opt-in, documented in the release notes, and accompanied by a deep dive (§11) explaining what changed and why. The first applied case is `speedtest-cli` → Ookla's official `speedtest` (§3.5.1); the pattern carries forward to every future deprecation.
+- **Active deprecation removal: kniferoll-installed deprecated tools are uninstalled on every install run.** When a tool in v1's inventory is flagged as deprecated, abandoned, or a supply-chain risk (per the quarterly review above), v2 does two things on every install run, not just on fresh installs: (1) does not install it; (2) actively removes it from any host where kniferoll itself previously installed it. The atuin precedent in v1 (`cleanup_removed_tools()` at `install_linux.sh:758-784` and `install_mac.sh:478-498`) is the canonical pattern: uninstall via the original package manager, remove the data dir, scrub init lines from rc files. v2 codifies this as two parallel arrays in `kniferoll-unpack/lib/inventory/deprecated.sh`:
+    - `KNIFEROLL_DEPRECATED_TOOLS` — names + rc-file scrub patterns (regex per shell rc file)
+    - `KNIFEROLL_DEPRECATED_PACKAGES` — package-manager uninstalls keyed by OS (apt / brew / winget / pacman / cargo / pipx)
+
+    Every install run iterates both arrays and removes hits. **In-bounds because kniferoll only removes what kniferoll installed**: the install manifest at `~/.kniferoll/state/<repo>-<isots>.json` records every tool kniferoll added, and the deprecation sweep only acts on tools whose manifest entry indicates kniferoll-installed provenance. Tools the user manually installed with the same name are left alone — kniferoll never uninstalls a package without first confirming it appears in a kniferoll manifest, and prints `[skip] <tool>: not installed by kniferoll, leaving alone` for transparency. The first applied case is `speedtest-cli` → Ookla's official `speedtest` (§3.5.1): the uninstall and the new Ookla install land in the same run, so the user's transition is immediate and visible. No opt-in `--migrate-<tool>` flag — migration is implicit and atomic. The pattern carries forward to every future deprecation; failing to add an entry to the deprecated arrays when a tool is flagged is the bug the v1 speedtest-cli scenario exemplified (plan said remove, scripts kept installing).
 - **Refuse to run as root unless explicitly invoked with `--root` and a documented reason.** The v1 scripts require sudo for individual operations (`sudo apt`, etc.) and that pattern continues — but the script itself runs as the user, never as root. `--root` is reserved for VM-bootstrap or container-image-build scenarios where there is no user yet.
 - **Explicit handling of corp TLS interception in managed scripts only.** Managed scripts take a CA bundle path via `--ca-bundle` flag or `KR_CA_BUNDLE` env var (with auto-detection as fallback) and propagate it to: `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `GIT_SSL_CAINFO`, `AWS_CA_BUNDLE`, `PIP_CERT`, `CARGO_HTTP_CAINFO` (Windows), `HOMEBREW_CURLOPT_CACERT` (macOS). Unmanaged scripts have no concept of a corp CA and refuse to read these env vars even if set — managed work belongs in managed scripts.
 - **Internal-repos toggle (managed scripts only, off by default in v2.0).** Managed scripts include code paths for routing all package fetches through internal mirrors instead of public registries: apt sources lists, pacman repos, `CARGO_REGISTRIES_*`, npm registry URL, pip index URL, GitHub binary mirrors, Homebrew tap rewrites. The switch is `KR_INTERNAL_REPOS=1` env var or `--internal-repos` flag, fed by the corp policy file (open question §9.8). **In v2.0 the switch ships off**: managed scripts work end-to-end against public sources just like their unmanaged twins. The internal-mirror code paths exist, are syntactically valid, and have unit tests, but are not enabled until a follow-up release when corporate-mirror configuration is testable. This is intentional — managed scripts ship and are useful even without internal-mirror infrastructure ready, and the toggle is added as a discrete, testable change later (phase 9).
 - **No splash-page bypass.** v1 included logic to auto-parse and submit Zscaler splash-page forms (`install_mac.sh:175-257`). v2 deliberately removes this. Setting up a managed shell does not require automated consent-page traversal — if a splash page intercepts an install-time download, the script errors with exit code 5 and instructs the user to open the URL in their browser, accept the splash page, and re-run. Auto-clicking through corporate consent screens is the kind of impersonation that should never live in this tool, even when it's convenient and even when v1 had it.
 - **No silent overwrites of user dotfiles.** Every dotfile change creates a timestamped backup *and* prints the diff to stderr before applying. Dry-run mode prints the diff and does not apply.
+- **Profile blocks self-guard at runtime, not at install time.** The decision "should this profile block do anything" must be made when the *shell loads* the profile, not when the script writes the profile. Install-time guards (`command -v <tool>` before deciding whether to write the block) create ordering dependencies on PATH state that almost always bite — most commonly when a tool was just installed by an earlier step in the same script but the PATH update hasn't propagated to the script's own execution yet. The v1 `ff` / fastfetch alias bug is the canonical case: `lolcrab` was being installed in the same run, but the install-time `command -v lolcrab` evaluated false because brew shellenv hadn't taken effect in the script's process, so the alias was never written; the user reloaded their shell and got no `ff`. Same root-cause class as the brew-not-in-PATH starship/zoxide/cmatrix/cbonsai/rclone failures on Pop!_OS. The right pattern: write the block unconditionally with a runtime guard *inside* it.
+
+    ```sh
+    # >>> kniferoll: <feature> >>>
+    if command -v <tool> >/dev/null 2>&1; then
+      <use the tool>
+    fi
+    # <<< kniferoll: <feature> <<<
+    ```
+
+    The block ships even if the tool isn't on PATH at install time. When the user later installs the tool (or PATH catches up), the block activates on the next shell load. CI lints any `command -v <tool>` outside a marker block used to gate writing a marker block as a v2 anti-pattern.
+- **Tool init lines must be version-aware at write time.** Tools change their init API across versions. `fzf --zsh` is a 0.48.0+ feature; pre-0.48 needs `source /usr/share/fzf/key-bindings.zsh` instead. `mise activate` replaced older `mise --zsh`. `conda init` evolved across major versions. `gh` completion paths shifted. The v1 `eval "$(fzf --zsh)"` write on Pop!_OS / Ubuntu 22.04 (which ships fzf 0.30.x without `--zsh`) prints `unknown option: --zsh` on every shell reload until the user manually upgrades — the script either knew or could have known what version it had just installed but wrote the modern invocation regardless. v2's correct pattern: either (a) write version-appropriate init based on the just-installed version, or (b) write a runtime version-detection wrapper *inside* the marker block:
+
+    ```sh
+    # >>> kniferoll: fzf init >>>
+    if command -v fzf >/dev/null 2>&1; then
+      _fzf_v=$(fzf --version | awk '{print $1}')
+      if [ "$(printf '%s\n' "0.48.0" "$_fzf_v" | sort -V | head -1)" = "0.48.0" ]; then
+        eval "$(fzf --zsh)"
+      else
+        [ -f /usr/share/fzf/key-bindings.zsh ] && source /usr/share/fzf/key-bindings.zsh
+        [ -f /usr/share/fzf/completion.zsh ]   && source /usr/share/fzf/completion.zsh
+      fi
+      unset _fzf_v
+    fi
+    # <<< kniferoll: fzf init <<<
+    ```
+
+    Best — install the modern version via brew/cargo/release-binary so the version-detection branch is dead code on default-install hosts, *and* write defensive init in case PATH resolves an older version first (system-installed fzf shadowing the cargo binary, etc.). The `kniferoll-unpack/lib/inventory/<category>.sh` files annotate each tool with its **minimum-version-for-current-init-pattern**; per-OS install scripts honor the annotation when generating profile blocks.
 - **Audit trail.** Every install writes a manifest to `~/.kniferoll/state/<repo>-<isots>.json` (e.g., `kniferoll-managed-mac-2026-05-02T01-15-04Z.json`): tool name, version installed, source URL, SHA256 of downloaded artifact, install method, timestamp, exit status. A `kniferoll status` companion (shipped in `kniferoll-unpack/lib/` and subtreed into every per-OS repo) reads the most recent manifest and reports current state.
 - **TLS 1.3 by default, TLS 1.2 fallback only in managed scripts.** Corporate proxies in 2026 should support TLS 1.3 nine years after RFC 8446. If they don't, that's a managed-script concern.
 - **Network egress check in preflight.** A simple HEAD to a known-stable URL with the configured CA bundle. If it fails, abort before any partial install. Half-installs are worse than failures.
@@ -603,6 +737,8 @@ v2 keeps the *behavior*, drops Go as a hard dependency, and puts the implementat
 | Cloud CLIs | All on | awscli, azure-cli, gcloud, rclone. |
 | Nerd Fonts | All on | 14 families pinned at v3.4.0 per the §6.2 cooling-off and pinning rules. |
 | **AI tools** | **All off** | See §6b.7 for the canonical set and the rationale for default-off. |
+| **Network & remote access** | **All off** | Tailscale (§5c). Off by default. |
+| **HA satellite roles (Linux only)** | MPD + BT Proxy ON; Z2M + Wyoming OFF | Linux-only category. First-wave default-on: MPD, ESPHome BT Proxy. Available-off (opt-in): Zigbee2MQTT, Wyoming voice satellite. Out of scope on Pi: Frigate, ESPresense. Gated on Tailscale being selected OR `--ha-host` passed. Full spec in [`V2_PLAN_SATELLITE.md`](./V2_PLAN_SATELLITE.md). |
 | Desktop apps (macOS only) | All on | iTerm2, Keka. |
 
 The AI category is the one departure from "all on by default." Every tool in it ships unselected; the user opts into the specific tools they want. See §6b.7.
@@ -906,7 +1042,7 @@ If the user is a Nix devotee, kniferoll is wrong. If the user is on a single pla
 
 ## 9. Open questions
 
-None blocking phase 1. Everything is resolved (see below) or scoped to a later phase boundary.
+None blocking phase 1. The earlier "remote-control trajectory" question has been answered by Chef and moved to Resolved (§5d / `V2_PLAN_SATELLITE.md`).
 
 **Pending UX-primitive decisions (not blocking phase 1, but they crystallize §6b.3):** Spectre.Console vs pure-PowerShell on Windows; whether macOS migrates from pure-bash to gum for single-engine parity across the four POSIX targets. Tracked in §6b.9. The decisions affect rendering, not the cross-OS contract — so phase 1's skeleton work proceeds on the §6b.3 provisional picks, and a future PR rewrites the affected rows when Chef calls.
 
@@ -926,9 +1062,13 @@ None blocking phase 1. Everything is resolved (see below) or scoped to a later p
 - **Tool selection model.** Per-tool granularity, not per-category. Every tool in the inventory is individually selectable in Custom mode. Categories are visual section headers, not single-toggle buckets. (§6b.1)
 - **AI tools default state.** Off by default — every individual AI tool ships unselected. The user opts into specific tools. The canonical AI inventory at v2.0 launch is in §6b.7 (claude-code, gemini-cli, codex-cli, copilot-cli, aider, langchain-cli, llm, ollama, mods, fabric, goose, aichat); the list is reviewed quarterly per the §6.2 cadence.
 - **Inventory cadence.** Quarterly review against three questions (best-in-class? actively maintained? most secure choice for its slot?). Recorded as `kniferoll-unpack/docs/evolution/<YYYY-Q>.md`. (§6.2)
-- **Deferred-replacement pattern.** Deprecated tools are not yanked from existing v1 installs at v2.0; v2.0 stops shipping them on fresh installs, and follow-up `--migrate-<tool>` flags handle the swap explicitly. First worked example: `speedtest-cli` → Ookla's official `speedtest` (§3.5.1). The pattern is a §6.2 security manifesto principle that carries forward to every future deprecation.
+- **Active deprecation removal (revised from earlier "deferred replacement" framing).** Deprecated tools that kniferoll itself installed in a prior run are uninstalled on every v2 install run, atomically with the new replacement install. Two parallel arrays in `kniferoll-unpack/lib/inventory/deprecated.sh` (`KNIFEROLL_DEPRECATED_TOOLS` for rc-line scrubbing + `KNIFEROLL_DEPRECATED_PACKAGES` for package-manager uninstalls) drive the sweep. Removal is gated on the kniferoll install manifest — user-installed tools with the same name are left alone. The atuin precedent (`install_linux.sh:758-784`, `install_mac.sh:478`+) is the canonical pattern; `speedtest-cli` → Ookla `speedtest` (§3.5.1) is the first worked example. (§6.2)
+- **Profile blocks self-guard at runtime.** The decision "should this profile block do anything" is made when the shell loads the profile, not when the script writes it. Install-time `command -v <tool>` guards on whether to write the block create PATH-ordering bugs (the v1 `ff`/lolcrab/fastfetch case, same root-cause class as the brew-not-in-PATH starship/zoxide/cmatrix/rclone failures). v2 writes profile blocks unconditionally with the runtime guard *inside* the marker block. CI lints the anti-pattern. (§6.2)
+- **Tool init lines are version-aware at write time.** Tools change their init API across versions (`fzf --zsh` is 0.48.0+, broke on Pop!_OS / Ubuntu 22.04's 0.30.x; `mise activate` superseded `mise --zsh`; `conda init` evolves; etc.). v2 either writes version-appropriate init based on the installed version or writes a runtime version-detection wrapper inside the marker block. The inventory files annotate each tool with its minimum-version-for-current-init-pattern; per-OS install scripts honor it. (§6.2)
 - **TUI tool descriptions.** Every tool in the inventory ships with a ≤ 60-char description that renders in the TUI next to the tool name. CI-lint enforces the length cap so descriptions never wrap on 80-col terminals. Descriptions are committed in the inventory files (`kniferoll-unpack/lib/inventory/<category>.sh`), versioned with the tool, and reviewed at the same quarterly cadence as the tool itself. (§6b.1, §6b.7)
 - **Side-by-side live log display.** v1 feature confirmed working on Linux; mechanism verified by reading `lib/split_terminal.sh` (pure POSIX bash, in-terminal Unicode box via `tput cup`, background `tail -f` subshell — *not* tmux). v2 sources the same lib in `kniferoll-mac` and `kniferoll-managed-mac` (one-line port; Mac currently doesn't have it). Windows v2 implements parity via `wt.exe split-pane` in the existing Windows Terminal window — replacing v1's broken `wt.exe -w new new-tab` separate-window approach that was removed in `hotfix/stabilize-cut`. WSL2 inherits the Linux mechanism unchanged. Hard cross-OS parity requirement, not aspirational. See §6b.8.
+- **Tailscale capability.** First-class in v2, off by default, opt-in via the new "Network & remote access" TUI category. v1 had only an unconditional shell alias on macOS (`install_mac.sh:1145-1148`) and no actual install logic anywhere — v2 fixes that. Per-OS install paths spec'd in §5c; auth UX, Tailscale SSH sub-option, managed-posture warning all documented. apt repo install path is the proper-keyring form, not curl-pipe-bash, even though Tailscale's docs default to the latter.
+- **HA satellite stack (Pi-flavored).** Linux-only TUI category with first-wave defaults MPD + ESPHome BT Proxy (default-on); Z2M + Wyoming available-off; Frigate + ESPresense out-of-scope on Pi with documented alternatives; multi-Pi orchestration deferred to v2.1+. Frames the Pi as a satellite to HA-on-`hyp-pve-02`, not as a control plane. Full role catalog, install paths, idempotency contract, next-steps banner, Pi-specific defensive defaults (log2ram, USB power note, swap-off) in `V2_PLAN_SATELLITE.md`. Pointer in §5d.
 - **Project identity.** AI / cybersecurity engineer's working toolkit, designed to evolve. Stated in the §Context "What this project is for" paragraph and in the §8.1 niche.
 - **Internal-repos toggle.** Built but off by default in v2.0 (§6.2). Phase 10 wires it on.
 - **Splash-page bypass.** Never. v1's auto-form-submit logic does not come forward.
