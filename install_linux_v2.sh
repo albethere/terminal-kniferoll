@@ -86,6 +86,22 @@ source "$SCRIPT_DIR/lib/ui.sh"
 FAILED_TOOLS=()
 FAILED_TOOLS_HINT="sudo apt-get update && sudo apt-get install --fix-missing <pkg>  (or pacman -S <pkg>)"
 
+# ── Pinned versions (top-of-file globals — DO NOT rely on env-var passthrough) ─
+# Empty/unset values silently produce broken URLs (e.g. .../download//<font>.zip
+# returning a 404 page — curl writes the HTML to disk, unzip fails, the user
+# sees a confusing chain of warnings). Pin here so every download path can
+# trust the constant.
+NERD_FONTS_VER="${NERD_FONTS_VER:-v3.4.0}"
+NERD_FONTS=(
+    Iosevka IosevkaTerm Hack UbuntuMono JetBrainsMono 3270
+    FiraCode CascadiaCode VictorMono Mononoki
+    SpaceMono SourceCodePro Meslo GeistMono
+)
+# All 14 names verified against actual asset names at:
+#   https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.4.0
+# When bumping NERD_FONTS_VER, re-verify with:
+#   gh release view <ver> --repo ryanoasis/nerd-fonts --json assets --jq '.assets[].name'
+
 # ── ERR trap with benign-command whitelist ────────────────────────────────────
 # Suppress non-zero exits we already handle structurally so the trap stays a
 # useful diagnostic instead of crying wolf on every presence check. Mac uses
@@ -2100,38 +2116,62 @@ fi
 # ────────────────────────────────────────────────────────────────────────────
 if [[ "$DO_FONTS" == "true" ]]; then
     FONT_DIR="$HOME/.local/share/fonts"
-    NERD_FONTS=(
-        Iosevka IosevkaTerm Hack UbuntuMono JetBrainsMono 3270
-        FiraCode CascadiaCode VictorMono Mononoki
-        SpaceMono SourceCodePro Meslo GeistMono
-    )
-    # Pinned release — update NERD_FONTS_VER here to upgrade all fonts at once
-    NERD_FONTS_VER="v3.4.0"
     _fonts_installed=0
     banner "NERD FONTS"
-    mkdir -p "$FONT_DIR"
-    for _nf in "${NERD_FONTS[@]}"; do
-        if fc-list 2>/dev/null | grep -qi "$_nf"; then
-            skip "$_nf Nerd Font already installed"
-            continue
+
+    # Hard guard — empty version is the canonical bug class (URL becomes
+    # .../download//<font>.zip → 404 HTML written to disk, unzip then chokes).
+    if [[ -z "$NERD_FONTS_VER" ]]; then
+        err "NERD_FONTS_VER is empty — refusing to construct broken URLs"
+        FAILED_TOOLS+=("nerd-fonts(unset-version)")
+    else
+        mkdir -p "$FONT_DIR"
+        # Common curl args — reused for HEAD preflight + GET download
+        _font_curl=(--proto '=https' --tlsv1.2 -fsSL --max-time 30)
+        [[ -n "${CURL_CA_BUNDLE:-}" && -f "${CURL_CA_BUNDLE}" ]] && \
+            _font_curl+=(--cacert "$CURL_CA_BUNDLE")
+
+        for _nf in "${NERD_FONTS[@]}"; do
+            if fc-list 2>/dev/null | grep -qi "$_nf"; then
+                skip "$_nf Nerd Font already installed"
+                continue
+            fi
+            _font_url="https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip"
+
+            # Preflight — HEAD the asset URL. A 404 here means the asset name
+            # in NERD_FONTS doesn't match a real release asset for this
+            # NERD_FONTS_VER. Skip-with-err so one bad name doesn't abort
+            # the whole fonts step (and so the user sees [✗] not [!] for an
+            # actual failure).
+            _http_status="$(curl "${_font_curl[@]}" -o /dev/null -w '%{http_code}' \
+                            -I "$_font_url" 2>/dev/null || echo "000")"
+            if [[ "$_http_status" != "200" && "$_http_status" != "302" ]]; then
+                err "$_nf Nerd Font: preflight HTTP ${_http_status} for ${_font_url}"
+                err "  asset may be renamed or absent in ${NERD_FONTS_VER} — verify with:"
+                err "  gh release view ${NERD_FONTS_VER} --repo ryanoasis/nerd-fonts --json assets --jq '.assets[].name'"
+                FAILED_TOOLS+=("font:$_nf")
+                continue
+            fi
+
+            _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
+            if curl "${_font_curl[@]}" "$_font_url" -o "$_font_zip"; then
+                mkdir -p "$FONT_DIR/$_nf"
+                if unzip -qo "$_font_zip" -d "$FONT_DIR/$_nf"; then
+                    ok "$_nf Nerd Font installed"
+                    (( ++_fonts_installed ))
+                else
+                    err "$_nf Nerd Font: unzip failed (download may be a 404 HTML page)"
+                    FAILED_TOOLS+=("font:$_nf")
+                fi
+            else
+                err "$_nf Nerd Font download failed (curl exit $?)"
+                FAILED_TOOLS+=("font:$_nf")
+            fi
+            rm -f "$_font_zip"
+        done
+        if [[ $_fonts_installed -gt 0 ]]; then
+            run_optional "Refreshing font cache" fc-cache -f
         fi
-        _font_zip="$(mktemp /tmp/font-XXXXXX.zip)"
-        if curl --proto '=https' --tlsv1.2 -fsSL \
-                ${CURL_CA_BUNDLE:+--cacert "$CURL_CA_BUNDLE"} \
-                "https://github.com/ryanoasis/nerd-fonts/releases/download/${NERD_FONTS_VER}/${_nf}.zip" \
-                -o "$_font_zip"; then
-            mkdir -p "$FONT_DIR/$_nf"
-            unzip -qo "$_font_zip" -d "$FONT_DIR/$_nf"
-            ok "$_nf Nerd Font installed"
-            (( ++_fonts_installed ))
-        else
-            warn "$_nf Nerd Font download failed"
-            FAILED_TOOLS+=("font:$_nf")
-        fi
-        rm -f "$_font_zip"
-    done
-    if [[ $_fonts_installed -gt 0 ]]; then
-        run_optional "Refreshing font cache" fc-cache -f
     fi
 fi
 

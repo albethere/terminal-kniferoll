@@ -45,10 +45,14 @@ _log() {
 # ── Logging helpers ───────────────────────────────────────────────────────────
 ok()     { echo -e "${GREEN}[✓]${RESET} ${HERB}$*${RESET}";   _log "OK"    "$*"; }
 info()   { echo -e "${CYAN}[→]${RESET} $*";                   _log "INFO"  "$*"; }
-warn()   { echo -e "${ORANGE}[~]${RESET} $*";                 _log "WARN"  "$*"; }
+warn()   { echo -e "${ORANGE}[!]${RESET} $*";                 _log "WARN"  "$*"; }
 skip()   { echo -e "${DIM}[~] skip: $*${RESET}";              _log "SKIP"  "$*"; }
 err()    { echo -e "${RED}[✗]${RESET} $*";                    _log "ERROR" "$*"; }
 die()    { echo -e "${RED}[✗] FATAL: $*${RESET}" >&2;         _log "ERROR" "FATAL: $*"; exit 1; }
+# Markers:  [✓] ok  ·  [→] info  ·  [!] warn  ·  [~] skip  ·  [✗] err/die
+# Keep these distinct — [~] is RESERVED for the skip marker. A failure that
+# the script handles soft (continues, but logs it) goes through warn() and
+# uses [!]; a hard failure goes through err()/die() and uses [✗].
 banner() { echo -e "\n${BOLD}${CYAN}[ $* ]${RESET}";          _log "INFO"  "=== $* ==="; }
 quip()   { echo -e "${DIM}  ⋮ $*${RESET}"; }
 
