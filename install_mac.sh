@@ -503,6 +503,21 @@ cleanup_removed_tools() {
         ok "mise — evicted"
     fi
 
+    # ── speedtest-cli — evicted 2026-05-03: deprecated upstream, supply-chain risk
+    #   (see docs/SUPPLY_CHAIN_RISK.md). No replacement carried.
+    if is_installed "speedtest-cli" || brew list speedtest-cli &>/dev/null 2>&1 \
+        || (command -v pip3 &>/dev/null && pip3 show speedtest-cli &>/dev/null 2>&1); then
+        did_work=true
+        warn "speedtest-cli found — evicting (deprecated, supply chain risk)"
+        brew list speedtest-cli &>/dev/null 2>&1 && \
+            run_optional "Removing speedtest-cli (brew)" brew uninstall speedtest-cli || true
+        if command -v pip3 &>/dev/null && pip3 show speedtest-cli &>/dev/null 2>&1; then
+            run_optional "Removing speedtest-cli (pip3)" \
+                bash -c "pip3 uninstall -y speedtest-cli 2>/dev/null"
+        fi
+        ok "speedtest-cli — evicted"
+    fi
+
     "$did_work" || skip "No removed tools found — clean slate"
 }
 
@@ -1287,7 +1302,7 @@ if [[ "$DO_DEV_TOOLS" == "true" ]]; then
         bat binutils btop cbonsai cmatrix exiftool
         fastfetch fontconfig freetype fzf gcc gh git gzip
         harfbuzz hexyl jq lsd lua lz4 lzo m4 micro ncurses
-        nushell speedtest-cli sqlite starship tealdeer tmux
+        nushell sqlite starship tealdeer tmux
         yazi zoxide zsh-autosuggestions zsh-fast-syntax-highlighting
         # Language runtimes
         go openjdk python@3.12 ruby

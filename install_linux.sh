@@ -1066,6 +1066,31 @@ cleanup_removed_tools() {
         ok "mise — evicted"
     fi
 
+    # ── speedtest-cli — evicted 2026-05-03: deprecated upstream, supply-chain risk
+    #   (see docs/SUPPLY_CHAIN_RISK.md). No replacement carried — speedtest is
+    #   consumer utility, not security tooling. Users who need one can install
+    #   manually via brew/scoop.
+    if is_installed "speedtest-cli" \
+        || ([[ "$PKG_MGR" == "apt" ]] && dpkg -s speedtest-cli &>/dev/null 2>&1) \
+        || ([[ "$PKG_MGR" == "pacman" ]] && pacman -Qi speedtest-cli &>/dev/null 2>&1) \
+        || (command -v pip3 &>/dev/null && pip3 show speedtest-cli &>/dev/null 2>&1); then
+        did_work=true
+        warn "speedtest-cli found — evicting (deprecated, supply chain risk)"
+        if [[ "$PKG_MGR" == "apt" ]] && dpkg -s speedtest-cli &>/dev/null 2>&1; then
+            run_optional "Removing speedtest-cli (apt)" \
+                bash -c "$SUDO apt-get remove -y -qq speedtest-cli"
+        fi
+        if [[ "$PKG_MGR" == "pacman" ]] && pacman -Qi speedtest-cli &>/dev/null 2>&1; then
+            run_optional "Removing speedtest-cli (pacman)" \
+                bash -c "$SUDO pacman -R --noconfirm speedtest-cli"
+        fi
+        if command -v pip3 &>/dev/null && pip3 show speedtest-cli &>/dev/null 2>&1; then
+            run_optional "Removing speedtest-cli (pip3)" \
+                bash -c "pip3 uninstall -y speedtest-cli 2>/dev/null"
+        fi
+        ok "speedtest-cli — evicted"
+    fi
+
     "$did_work" || skip "No removed tools found — clean slate"
 }
 
@@ -1922,7 +1947,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         # atomically and installs NONE of the others, including cmatrix and
         # rclone which DO exist in apt.
         apt_batch "SHELL EXTRAS (apt)" \
-            "rclone:rclone" "speedtest-cli:speedtest-cli" "unzip:unzip" \
+            "rclone:rclone" "unzip:unzip" \
             "fastfetch:fastfetch" "cmatrix:cmatrix"
         brew_extras_install "SHELL EXTRAS (brew)" \
             "zoxide:zoxide" "starship:starship" "cbonsai:cbonsai"
@@ -1947,7 +1972,7 @@ if [[ "$DO_SECURITY" == "true" ]]; then
         PACMAN_PACKAGES=(
             binutils btop perl-image-exiftool fastfetch fzf git gnutls go gzip hexyl jq openssl lua
             lz4 m4 micro ncurses ngrep nmap nodejs python-pipx python python-pip rclone
-            ripgrep ruby rustup speedtest-cli sqlite tcpdump tealdeer tmux unbound uv
+            ripgrep ruby rustup sqlite tcpdump tealdeer tmux unbound uv
             wireshark-cli yara zsh-autosuggestions cmatrix nushell yazi
             lsd bat zoxide starship
             # mise and atuin removed 2026-04-05 — supply chain risk
