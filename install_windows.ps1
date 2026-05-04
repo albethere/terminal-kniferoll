@@ -1934,7 +1934,7 @@ function reload { . $PROFILE; Write-Host 'Profile reloaded.' -ForegroundColor Cy
 # BEGIN terminal-kniferoll ff-alias -- DO NOT EDIT (managed by installer)
 if ((Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
     (Get-Command lolcrab -ErrorAction SilentlyContinue)) {
-    function ff { fastfetch | lolcrab }
+    function ff { fastfetch --pipe | lolcrab }
 } elseif (Get-Command fastfetch -ErrorAction SilentlyContinue) {
     function ff { fastfetch }
 }
@@ -2013,7 +2013,7 @@ if (-not $env:TK_FASTFETCH_GREETED -and -not $env:DISABLE_WELCOME -and `
     (Get-Command fastfetch -ErrorAction SilentlyContinue) -and `
     (Test-TKAnsiSupported)) {
     if (Get-Command lolcrab -ErrorAction SilentlyContinue) {
-        fastfetch | lolcrab
+        fastfetch --pipe | lolcrab
     } else {
         fastfetch
     }

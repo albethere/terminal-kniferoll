@@ -981,10 +981,12 @@ BLKEOF
 }
 
 _ff_alias_block() {
+    # `--pipe` forces fastfetch into non-interactive mode -- clean pipeable
+    # output instead of cursor-positioning ANSI that confuses lolcrab.
     cat << 'BLKEOF'
 # BEGIN terminal-kniferoll ff-alias — DO NOT EDIT (managed by installer)
 if command -v fastfetch >/dev/null 2>&1 && command -v lolcrab >/dev/null 2>&1; then
-    alias ff='fastfetch | lolcrab'
+    alias ff='fastfetch --pipe | lolcrab'
 elif command -v fastfetch >/dev/null 2>&1; then
     alias ff='fastfetch'
 fi
@@ -998,7 +1000,7 @@ _fastfetch_greeter_block() {
 if [ -z "${TK_FASTFETCH_GREETED:-}" ] && [ -z "${DISABLE_WELCOME:-}" ] && \
    command -v fastfetch >/dev/null 2>&1; then
     if command -v lolcrab >/dev/null 2>&1; then
-        fastfetch | lolcrab
+        fastfetch --pipe | lolcrab
     else
         fastfetch
     fi

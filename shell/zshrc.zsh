@@ -93,7 +93,9 @@ fi
 
 # BEGIN terminal-kniferoll ff-alias — DO NOT EDIT (managed by installer)
 if command -v fastfetch >/dev/null 2>&1 && command -v lolcrab >/dev/null 2>&1; then
-    alias ff='fastfetch | lolcrab'
+    # `--pipe` -> fastfetch non-interactive mode (clean pipeable output, no
+    # cursor ANSI that would confuse lolcrab).
+    alias ff='fastfetch --pipe | lolcrab'
 elif command -v fastfetch >/dev/null 2>&1; then
     alias ff='fastfetch'
 fi
@@ -103,7 +105,7 @@ fi
 if [ -z "${TK_FASTFETCH_GREETED:-}" ] && [ -z "${DISABLE_WELCOME:-}" ] && \
    command -v fastfetch >/dev/null 2>&1; then
     if command -v lolcrab >/dev/null 2>&1; then
-        fastfetch | lolcrab
+        fastfetch --pipe | lolcrab
     else
         fastfetch
     fi
